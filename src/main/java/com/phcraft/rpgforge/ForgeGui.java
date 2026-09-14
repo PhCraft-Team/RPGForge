@@ -56,7 +56,7 @@ public final class ForgeGui implements Listener {
 
     private void openItemList(Player player, int page) {
         var holder = new ForgeHolder(ForgeHolder.Type.ITEM_LIST);
-        Inventory inv = Bukkit.createInventory(holder, 54, RPGForgePlugin.cc("&6&l⚒ RPG 道具锻造台 ⚒"));
+        Inventory inv = Bukkit.createInventory(holder, 54, RPGForgePlugin.cc("&b&l⚒ RPG 道具锻造台 ⚒"));
         holder.inventory = inv;
 
         contexts.put(inv, new EditContext(null, null, EditContext.PageType.LIST, page));
@@ -150,7 +150,7 @@ public final class ForgeGui implements Listener {
 
         var holder = new ForgeHolder(ForgeHolder.Type.ITEM_EDIT);
         Inventory inv = Bukkit.createInventory(holder, 54,
-                RPGForgePlugin.cc("&6编辑 &f" + item.displayName()));
+                RPGForgePlugin.cc("&b编辑 &f" + item.displayName()));
         holder.inventory = inv;
 
         contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.EDIT, page));
@@ -284,7 +284,7 @@ public final class ForgeGui implements Listener {
     private void openPowerSelect(Player player, String itemId, int page) {
         var holder = new ForgeHolder(ForgeHolder.Type.POWER_SELECT);
         Inventory inv = Bukkit.createInventory(holder, 54,
-                RPGForgePlugin.cc("&6选择要添加的能力"));
+                RPGForgePlugin.cc("&b选择要添加的能力"));
         holder.inventory = inv;
 
         contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.POWER_SELECT, page));
@@ -377,7 +377,7 @@ public final class ForgeGui implements Listener {
 
         var holder = new ForgeHolder(ForgeHolder.Type.POWER_EDIT);
         Inventory inv = Bukkit.createInventory(holder, 54,
-                RPGForgePlugin.cc("&6编辑能力：&f" + power.type().displayName()));
+                RPGForgePlugin.cc("&b编辑能力：&f" + power.type().displayName()));
         holder.inventory = inv;
 
         contexts.put(inv, new EditContext(itemId, powerIndex, EditContext.PageType.POWER_EDIT, 0));
@@ -485,7 +485,7 @@ public final class ForgeGui implements Listener {
 
         var holder = new ForgeHolder(ForgeHolder.Type.TRIGGER_SELECT);
         Inventory inv = Bukkit.createInventory(holder, 54,
-                RPGForgePlugin.cc("&6选择触发方式"));
+                RPGForgePlugin.cc("&b选择触发方式"));
         holder.inventory = inv;
 
         contexts.put(inv, new EditContext(itemId, powerIndex, EditContext.PageType.TRIGGER_SELECT, 0));
