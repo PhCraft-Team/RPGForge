@@ -2,7 +2,7 @@
 
 > 在游戏内用 GUI 轻松制作各种特效 RPG 道具，无需写一行配置。
 
-![Java](https://img.shields.io/badge/Java-21-orange)
+![Java](https://img.shields.io/badge/Java-25-orange)
 ![Paper](https://img.shields.io/badge/Paper-1.21+-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -21,12 +21,12 @@
 
 ## 📦 安装
 
-1. 下载 `RPGForge-1.0.0.jar`
+1. 下载最新版 `RPGForge-x.x.x.jar`
 2. 放入服务器 `plugins/` 目录
 3. 重启服务器
 4. （可选）安装 Vault 经济插件以启用金币消耗功能
 
-> 支持 Paper 1.21 及以上版本。
+> 支持 Paper 1.21 及以上版本，需要 **Java 25** 运行环境。
 
 ## 🚀 快速开始
 
