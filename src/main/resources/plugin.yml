@@ -1,0 +1,31 @@
+name: RPGForge
+version: ${version}
+main: com.phcraft.rpgforge.RPGForgePlugin
+api-version: '1.21'
+author: PHCraft
+description: 可视化 RPG 道具编辑器 - 在游戏内用 GUI 制作各种特效道具
+softdepend: [Vault]
+
+commands:
+  rpgforge:
+    description: RPGForge 管理命令
+    usage: /rpgforge <give|list|reload|create|repair>
+    permission: rpgforge.admin
+  rpg:
+    description: 打开 RPG 道具编辑器
+    usage: /rpg
+    permission: rpgforge.use
+
+permissions:
+  rpgforge.use:
+    description: 打开 RPG 道具编辑器
+    default: op
+  rpgforge.admin:
+    description: RPGForge 管理权限
+    default: op
+    children:
+      rpgforge.use: true
+      rpgforge.admin.repair: true
+  rpgforge.admin.repair:
+    description: 修复 RPG 物品耐久
+    default: op

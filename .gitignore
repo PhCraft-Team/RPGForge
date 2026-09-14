@@ -1,0 +1,28 @@
+# Build output
+build/
+.gradle/
+*.class
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Minecraft test server
+server/
+plugins/
+world/
+world_nether/
+world_the_end/
