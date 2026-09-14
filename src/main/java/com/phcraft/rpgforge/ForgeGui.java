@@ -141,7 +141,7 @@ public final class ForgeGui implements Listener {
     //  第二层：物品编辑
     // ============================================================
 
-    private void openItemEdit(Player player, String itemId) {
+    private void openItemEdit(Player player, String itemId, int page) {
         RPGItem item = plugin.registry().get(itemId);
         if (item == null) {
             player.sendMessage(RPGForgePlugin.cc("&c物品不存在：" + itemId));
@@ -153,7 +153,7 @@ public final class ForgeGui implements Listener {
                 RPGForgePlugin.cc("&6编辑 &f" + item.displayName()));
         holder.inventory = inv;
 
-        contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.EDIT, 0));
+        contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.EDIT, page));
 
         // 装饰
         ItemStack border = namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null);
@@ -193,17 +193,41 @@ public final class ForgeGui implements Listener {
                 List.of("&7当前：&f" + item.maxDurability(),
                         "&e点击 &7修改最大耐久值（0=使用默认）")));
 
-        // Power 列表区（第 4、5 行，中间 7 格）
+        // Power 列表区（第 4 行，中间 7 格，支持翻页）
         // 标题
+        int totalPowers = item.powers().size();
+        int powersPerPage = 7;
+        int totalPowerPages = Math.max(1, (int) Math.ceil((double) totalPowers / powersPerPage));
+        if (page < 0) page = 0;
+        if (page >= totalPowerPages) page = totalPowerPages - 1;
+
         inv.setItem(28, namedItem(Material.BLAZE_POWDER, "&6&l能力 (Power) 列表",
-                List.of("&7共 &e" + item.powers().size() + " &7个能力",
+                List.of("&7共 &e" + totalPowers + " &7个能力",
+                        "&7第 &e" + (page + 1) + " / " + totalPowerPages + " &7页",
                         "&e点击能力 &7编辑参数和触发方式",
                         "&a点击下方 + 号 &7添加新能力")));
 
-        // 展示 Powers（最多 7 个，一行）
-        for (int i = 0; i < Math.min(7, item.powers().size()); i++) {
-            RPGPower power = item.powers().get(i);
-            inv.setItem(29 + i, powerCard(power));
+        // 展示 Powers（每页 7 个，一行）
+        int powerStart = page * powersPerPage;
+        for (int i = 0; i < powersPerPage; i++) {
+            int idx = powerStart + i;
+            if (idx >= totalPowers) break;
+            RPGPower power = item.powers().get(idx);
+            inv.setItem(29 + i, powerCard(power, idx + 1));
+        }
+
+        // 翻页按钮
+        if (page > 0) {
+            inv.setItem(27, namedItem(Material.ARROW, "&a上一页",
+                    List.of("&7第 " + (page + 1) + " / " + totalPowerPages + " 页")));
+        } else {
+            inv.setItem(27, namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null));
+        }
+        if (page < totalPowerPages - 1) {
+            inv.setItem(36, namedItem(Material.ARROW, "&a下一页",
+                    List.of("&7第 " + (page + 1) + " / " + totalPowerPages + " 页")));
+        } else {
+            inv.setItem(36, namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null));
         }
 
         // 添加 Power 按钮
@@ -223,7 +247,7 @@ public final class ForgeGui implements Listener {
     }
 
     /** Power 卡片（用于物品编辑界面展示） */
-    private ItemStack powerCard(RPGPower power) {
+    private ItemStack powerCard(RPGPower power, int index) {
         Material mat;
         try {
             mat = Material.valueOf(power.type().iconMaterial());
@@ -257,13 +281,13 @@ public final class ForgeGui implements Listener {
     //  Power 选择（添加新 Power 时弹出）
     // ============================================================
 
-    private void openPowerSelect(Player player, String itemId) {
+    private void openPowerSelect(Player player, String itemId, int page) {
         var holder = new ForgeHolder(ForgeHolder.Type.POWER_SELECT);
         Inventory inv = Bukkit.createInventory(holder, 54,
                 RPGForgePlugin.cc("&6选择要添加的能力"));
         holder.inventory = inv;
 
-        contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.POWER_SELECT, 0));
+        contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.POWER_SELECT, page));
 
         ItemStack border = namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null);
         for (int i = 0; i < 54; i++) {
@@ -273,21 +297,48 @@ public final class ForgeGui implements Listener {
         }
 
         PowerType[] types = PowerType.values();
-        int slot = 10;
-        for (PowerType type : types) {
-            inv.setItem(slot, powerTypeCard(type));
+        int perPage = 28; // 4行 × 7列
+        int totalPages = (int) Math.ceil((double) types.length / perPage);
+        if (page < 0) page = 0;
+        if (page >= totalPages) page = totalPages - 1;
+
+        int startIdx = page * perPage;
+        int slot = 10; // 从第 2 行第 2 列开始
+        for (int i = 0; i < perPage; i++) {
+            int idx = startIdx + i;
+            if (idx >= types.length) break;
+
+            inv.setItem(slot, powerTypeCard(types[idx], idx + 1));
             slot++;
-            if ((slot + 1) % 9 == 0) slot += 2;
-            if (slot >= 44) break;
+            if ((slot + 1) % 9 == 0) slot += 2; // 跳过右边框
         }
 
+        // 返回按钮
         inv.setItem(49, namedItem(Material.ARROW, "&e返回", null));
+
+        // 翻页按钮
+        if (page > 0) {
+            inv.setItem(48, namedItem(Material.ARROW, "&a上一页",
+                    List.of("&7第 " + (page + 1) + " / " + totalPages + " 页")));
+        } else {
+            inv.setItem(48, namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null));
+        }
+        if (page < totalPages - 1) {
+            inv.setItem(50, namedItem(Material.ARROW, "&a下一页",
+                    List.of("&7第 " + (page + 1) + " / " + totalPages + " 页")));
+        } else {
+            inv.setItem(50, namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null));
+        }
+
+        // 页码提示（中间显示总数）
+        inv.setItem(53, namedItem(Material.BOOK, "&b共 " + types.length + " 种能力",
+                List.of("&7第 " + (page + 1) + " / " + totalPages + " 页")));
 
         player.openInventory(inv);
         player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.6f, 1.0f);
     }
 
-    private ItemStack powerTypeCard(PowerType type) {
+    private ItemStack powerTypeCard(PowerType type, int index) {
         Material mat;
         try {
             mat = Material.valueOf(type.iconMaterial());
@@ -298,7 +349,7 @@ public final class ForgeGui implements Listener {
         ItemMeta meta = item.getItemMeta();
         if (meta == null) return item;
 
-        meta.setDisplayName(RPGForgePlugin.cc("&e" + type.displayName()));
+        meta.setDisplayName(RPGForgePlugin.cc("&e" + type.displayName() + " &8#" + index));
         List<String> lore = new ArrayList<>();
         lore.add(RPGForgePlugin.cc("&7" + type.description()));
         lore.add("");
@@ -543,7 +594,7 @@ public final class ForgeGui implements Listener {
                 RPGItem newItem = new RPGItem(id);
                 plugin.registry().add(newItem);
                 player.sendMessage(RPGForgePlugin.cc("&a已创建物品 &e" + id + "&a！"));
-                openItemEdit(player, id);
+                openItemEdit(player, id, 0);
             });
             return;
         }
@@ -575,7 +626,7 @@ public final class ForgeGui implements Listener {
         }
 
         // 左键：编辑
-        openItemEdit(player, itemId);
+        openItemEdit(player, itemId, 0);
     }
 
     /** 从列表界面的 slot 反查物品 ID */
@@ -625,7 +676,7 @@ public final class ForgeGui implements Listener {
             promptChatInput(player, "输入新的物品名称（支持 & 颜色码）：", input -> {
                 item.setDisplayName(input);
                 plugin.registry().saveItem(item);
-                openItemEdit(player, item.id());
+                openItemEdit(player, item.id(), 0);
             });
             return;
         }
@@ -639,7 +690,7 @@ public final class ForgeGui implements Listener {
                 } catch (IllegalArgumentException e) {
                     player.sendMessage(RPGForgePlugin.cc("&c无效的材质名：" + input));
                 }
-                openItemEdit(player, item.id());
+                openItemEdit(player, item.id(), 0);
             });
             return;
         }
@@ -660,7 +711,7 @@ public final class ForgeGui implements Listener {
                 } catch (NumberFormatException e) {
                     player.sendMessage(RPGForgePlugin.cc("&c无效的数字：" + input));
                 }
-                openItemEdit(player, item.id());
+                openItemEdit(player, item.id(), 0);
             });
             return;
         }
@@ -668,7 +719,7 @@ public final class ForgeGui implements Listener {
         if (raw == 24) {
             item.setUnbreakable(!item.unbreakable());
             plugin.registry().saveItem(item);
-            openItemEdit(player, item.id());
+            openItemEdit(player, item.id(), 0);
             return;
         }
         // 最大耐久
@@ -681,27 +732,44 @@ public final class ForgeGui implements Listener {
                 } catch (NumberFormatException e) {
                     player.sendMessage(RPGForgePlugin.cc("&c无效的数字：" + input));
                 }
-                openItemEdit(player, item.id());
+                openItemEdit(player, item.id(), 0);
             });
             return;
         }
 
         // 添加 Power
         if (raw == 37) {
-            openPowerSelect(player, item.id());
+            openPowerSelect(player, item.id(), 0);
+            return;
+        }
+
+        // 上一页（Power 列表）
+        if (raw == 27) {
+            if (ctx.pageNum() > 0) {
+                openItemEdit(player, item.id(), ctx.pageNum() - 1);
+            }
+            return;
+        }
+
+        // 下一页（Power 列表）
+        if (raw == 36) {
+            int totalPowerPages = Math.max(1, (int) Math.ceil((double) item.powers().size() / 7));
+            if (ctx.pageNum() < totalPowerPages - 1) {
+                openItemEdit(player, item.id(), ctx.pageNum() + 1);
+            }
             return;
         }
 
         // 点击 Power 卡片（slot 29-35）
         if (raw >= 29 && raw <= 35) {
-            int powerIdx = raw - 29;
+            int powerIdx = ctx.pageNum() * 7 + (raw - 29);
             if (powerIdx < item.powers().size()) {
                 if (event.isShiftClick() && event.isLeftClick()) {
                     // Shift+左键：移除
                     item.removePower(powerIdx);
                     plugin.registry().saveItem(item);
                     player.sendMessage(RPGForgePlugin.cc("&c已移除能力。"));
-                    openItemEdit(player, item.id());
+                    openItemEdit(player, item.id(), ctx.pageNum());
                 } else {
                     openPowerEdit(player, item.id(), powerIdx);
                 }
@@ -712,12 +780,30 @@ public final class ForgeGui implements Listener {
 
     // ----- Power 选择界面点击 -----
     private void handlePowerSelectClick(Player player, Inventory top, int raw, EditContext ctx) {
+        // 返回
         if (raw == 49) {
-            openItemEdit(player, ctx.itemId());
+            openItemEdit(player, ctx.itemId(), 0);
             return;
         }
 
-        PowerType type = findPowerTypeFromSlot(raw);
+        // 上一页
+        if (raw == 48) {
+            if (ctx.pageNum() > 0) {
+                openPowerSelect(player, ctx.itemId(), ctx.pageNum() - 1);
+            }
+            return;
+        }
+
+        // 下一页
+        if (raw == 50) {
+            int totalPages = (int) Math.ceil((double) PowerType.values().length / 28);
+            if (ctx.pageNum() < totalPages - 1) {
+                openPowerSelect(player, ctx.itemId(), ctx.pageNum() + 1);
+            }
+            return;
+        }
+
+        PowerType type = findPowerTypeFromSlot(raw, ctx.pageNum());
         if (type == null) return;
 
         RPGItem item = plugin.registry().get(ctx.itemId());
@@ -735,11 +821,11 @@ public final class ForgeGui implements Listener {
         openPowerEdit(player, item.id(), item.powers().size() - 1);
     }
 
-    private PowerType findPowerTypeFromSlot(int slot) {
+    private PowerType findPowerTypeFromSlot(int slot, int page) {
         int row = slot / 9;
         int col = slot % 9;
-        if (row < 1 || col < 1 || col > 7) return null;
-        int idx = (row - 1) * 7 + (col - 1);
+        if (row < 1 || row > 4 || col < 1 || col > 7) return null;
+        int idx = page * 28 + (row - 1) * 7 + (col - 1);
         PowerType[] types = PowerType.values();
         if (idx < 0 || idx >= types.length) return null;
         return types[idx];
@@ -754,7 +840,7 @@ public final class ForgeGui implements Listener {
 
         // 返回
         if (raw == 48) {
-            openItemEdit(player, item.id());
+            openItemEdit(player, item.id(), 0);
             return;
         }
         // 删除
@@ -762,7 +848,7 @@ public final class ForgeGui implements Listener {
             item.removePower(ctx.powerIndex());
             plugin.registry().saveItem(item);
             player.sendMessage(RPGForgePlugin.cc("&c已移除能力。"));
-            openItemEdit(player, item.id());
+            openItemEdit(player, item.id(), 0);
             return;
         }
         // 保存
@@ -946,12 +1032,12 @@ public final class ForgeGui implements Listener {
                 item.setLore(newLore);
                 gui.plugin.registry().saveItem(item);
                 player.sendMessage(RPGForgePlugin.cc("&a描述已更新！"));
-                gui.openItemEdit(player, item.id());
+                gui.openItemEdit(player, item.id(), 0);
                 return;
             }
             if ("cancel".equals(cmd)) {
                 player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
-                gui.openItemEdit(player, item.id());
+                gui.openItemEdit(player, item.id(), 0);
                 return;
             }
             if ("skip".equals(cmd)) {

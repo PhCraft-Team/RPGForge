@@ -83,6 +83,32 @@ Power 是 RPGForge 的核心 —— 每个 Power 代表道具的一种能力/特
 
 ---
 
+### 修复耐久 (repair)
+
+使用时恢复物品耐久度，可设置消耗特定材料。
+
+**参数**：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `repair-amount` | 整数 | `50` | 修复的耐久点数或百分比 |
+| `repair-mode` | 字符串 | `add` | `add`=增加耐久点，`percent`=按最大耐久百分比恢复 |
+| `cost-type` | 字符串 | `none` | 消耗类型：`none`=不消耗，`material`=原版物品，`rpgitem`=RPG 物品 |
+| `cost-id` | 字符串 | 空 | 消耗物品 ID：原版材质名（如 `DIAMOND`）或 RPG 物品 ID |
+| `cost-amount` | 整数 | `1` | 每次维修消耗的物品数量 |
+| `cost-location` | 字符串 | `inventory` | 消耗位置：`inventory`=背包任意，`offhand`=副手，`mainhand`=主手 |
+| `cooldown` | 整数 | `0` | 冷却时间（秒） |
+
+**使用示例**：
+
+- **铁砧修复**：`cost-type=material`, `cost-id=IRON_INGOT`, `cost-amount=2`, `repair-amount=100`
+- **修复石**：创建一个 RPG 物品「修复石」，设置 `cost-type=rpgitem`, `cost-id=repair_stone`
+- **副手修复**：`cost-location=offhand`，玩家必须把材料放在副手才能修复
+
+> 维修成功后会自动刷新耐久 Lore 显示，并播放附魔粒子特效。
+
+---
+
 ## 战斗类
 
 ### 召唤闪电 (lightning)
