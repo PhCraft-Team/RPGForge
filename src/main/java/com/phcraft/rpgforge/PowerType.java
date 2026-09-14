@@ -390,6 +390,28 @@ public enum PowerType {
             Map.of(
                     "amount", new ParamInfo("消耗金额", ParamType.DOUBLE, "每次使用消耗的金币数"),
                     "fail-message", new ParamInfo("失败提示", ParamType.STRING, "金币不足时显示的消息")
+            )),
+
+    // ===== 维修类 =====
+    REPAIR("repair", "修复耐久", "使用时恢复物品耐久度，可设置消耗材料",
+            "MENDING_BOOK",
+            Map.of(
+                    "repair-amount", 50,
+                    "repair-mode", "add",
+                    "cost-type", "none",
+                    "cost-id", "",
+                    "cost-amount", 1,
+                    "cost-location", "inventory",
+                    "cooldown", 0
+            ),
+            Map.of(
+                    "repair-amount", new ParamInfo("修复数量", ParamType.INTEGER, "修复的耐久点数或百分比"),
+                    "repair-mode", new ParamInfo("修复模式", ParamType.STRING, "add=增加耐久点，percent=按最大耐久百分比恢复"),
+                    "cost-type", new ParamInfo("消耗类型", ParamType.STRING, "none=不消耗，material=原版物品，rpgitem=RPG物品"),
+                    "cost-id", new ParamInfo("消耗物品ID", ParamType.STRING, "原版材质名（如 DIAMOND）或 RPG 物品 ID"),
+                    "cost-amount", new ParamInfo("消耗数量", ParamType.INTEGER, "每次维修消耗的物品数量"),
+                    "cost-location", new ParamInfo("消耗位置", ParamType.STRING, "inventory=背包任意位置，offhand=副手，mainhand=主手"),
+                    "cooldown", new ParamInfo("冷却时间(秒)", ParamType.INTEGER, "0 表示无冷却")
             ));
 
     // ============================================================

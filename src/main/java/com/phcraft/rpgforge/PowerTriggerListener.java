@@ -437,6 +437,132 @@ public class PowerTriggerListener implements Listener {
                     }
                 }
             }
+
+            // 维修 Power（独立处理，需要访问 itemStack）
+            if (power.type() == PowerType.REPAIR) {
+                handleRepairPower(player, itemStack, rpgItem, power);
+            }
+        }
+    }
+
+    /**
+     * 处理维修 Power：检查消耗材料、恢复物品耐久。
+     */
+    private void handleRepairPower(Player player, ItemStack itemStack, RPGItem rpgItem, RPGPower power) {
+        ItemMeta meta = itemStack.getItemMeta();
+        if (!(meta instanceof Damageable damageable) || !damageable.hasMaxDamage()) {
+            return; // 物品没有耐久属性
+        }
+
+        int maxDur = damageable.getMaxDamage();
+        int currentDmg = damageable.getDamage();
+        if (currentDmg <= 0) {
+            return; // 耐久已满，不需要修
+        }
+
+        // 1. 检查并消耗材料
+        String costType = power.paramString("cost-type", "none");
+        String costId = power.paramString("cost-id", "");
+        int costAmount = power.paramInt("cost-amount", 1);
+        String costLocation = power.paramString("cost-location", "inventory");
+
+        if (!"none".equalsIgnoreCase(costType) && !costId.isEmpty()) {
+            ItemStack costItem = findCostItem(player, costType, costId, costAmount, costLocation);
+            if (costItem == null) {
+                // 材料不足
+                String failMsg = power.failMessage();
+                if (failMsg == null || failMsg.isEmpty()) {
+                    failMsg = "&c材料不足！需要 " + costAmount + " 个 " + costId;
+                }
+                sendFailMessage(player, failMsg, null);
+                return; // 不执行维修
+            }
+            // 消耗材料
+            costItem.setAmount(costItem.getAmount() - costAmount);
+            if (costItem.getAmount() <= 0) {
+                player.getInventory().removeItem(costItem);
+            }
+        }
+
+        // 2. 计算修复量
+        int repairAmount = power.paramInt("repair-amount", 50);
+        String repairMode = power.paramString("repair-mode", "add");
+
+        int repairPoints;
+        if ("percent".equalsIgnoreCase(repairMode)) {
+            repairPoints = (int) (maxDur * repairAmount / 100.0);
+        } else {
+            repairPoints = repairAmount;
+        }
+
+        // 3. 应用修复
+        int newDmg = Math.max(0, currentDmg - repairPoints);
+        damageable.setDamage(newDmg);
+        itemStack.setItemMeta((ItemMeta) damageable);
+
+        // 4. 刷新耐久 Lore（如果有自定义显示）
+        RPGItem.updateDurabilityLore(itemStack, rpgItem.id());
+
+        // 5. 播放粒子效果
+        player.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT,
+                itemStack.getType().isAir() ? player.getLocation() : player.getEyeLocation(),
+                15, 0.3, 0.5, 0.3, 0.1);
+    }
+
+    /**
+     * 查找玩家身上的消耗材料。
+     *
+     * @return 找到的物品栈（引用），找不到返回 null
+     */
+    private ItemStack findCostItem(Player player, String costType, String costId,
+                                   int amount, String location) {
+        boolean isRpgItem = "rpgitem".equalsIgnoreCase(costType);
+
+        // 限定搜索位置
+        switch (location.toLowerCase()) {
+            case "offhand" -> {
+                ItemStack off = player.getInventory().getItemInOffHand();
+                if (matchesCostItem(off, costType, costId) && off.getAmount() >= amount) {
+                    return off;
+                }
+                return null;
+            }
+            case "mainhand" -> {
+                ItemStack main = player.getInventory().getItemInMainHand();
+                if (matchesCostItem(main, costType, costId) && main.getAmount() >= amount) {
+                    return main;
+                }
+                return null;
+            }
+            default -> {
+                // inventory: 搜索整个背包
+                for (ItemStack item : player.getInventory().getStorageContents()) {
+                    if (item == null || item.getType().isAir()) continue;
+                    if (matchesCostItem(item, costType, costId) && item.getAmount() >= amount) {
+                        return item;
+                    }
+                }
+                return null;
+            }
+        }
+    }
+
+    /**
+     * 检查物品是否匹配消耗材料。
+     */
+    private boolean matchesCostItem(ItemStack item, String costType, String costId) {
+        if (item == null || item.getType().isAir()) return false;
+        if ("rpgitem".equalsIgnoreCase(costType)) {
+            String itemId = RPGItem.readItemId(item);
+            return costId.equalsIgnoreCase(itemId);
+        } else {
+            // material
+            try {
+                org.bukkit.Material mat = org.bukkit.Material.valueOf(costId.toUpperCase());
+                return item.getType() == mat;
+            } catch (IllegalArgumentException e) {
+                return false;
+            }
         }
     }
 

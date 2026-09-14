@@ -64,6 +64,7 @@ final class PowerExecutor {
             case REPULSE -> repulseEntities(player, params);
             case SHIELD -> applyShield(player, params);
             case ECONOMY_COST -> economyCost(player, params);
+            case REPAIR -> false; // 由事件监听器处理（需要访问 itemStack）
         };
     }
 
