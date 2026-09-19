@@ -119,6 +119,10 @@ public class ForgeCommand {
                                 .executes(ctx -> {
                                     CommandSender sender = ctx.getSource().getSender();
                                     String id = StringArgumentType.getString(ctx, "id").toLowerCase();
+                                    if (!ItemRegistry.isValidId(id)) {
+                                        sender.sendMessage(RPGForgePlugin.cc("&c物品 ID 只能包含字母、数字、下划线和连字符。"));
+                                        return 0;
+                                    }
                                     if (plugin.registry().exists(id)) {
                                         sender.sendMessage("§c物品 " + id + " 已存在。");
                                         return 0;

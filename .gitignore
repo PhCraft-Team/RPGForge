@@ -26,3 +26,8 @@ plugins/
 world/
 world_nether/
 world_the_end/
+
+# Template build and Python cache
+out/
+__pycache__/
+*.pyc
