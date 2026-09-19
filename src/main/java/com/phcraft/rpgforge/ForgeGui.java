@@ -575,8 +575,11 @@ public final class ForgeGui implements Listener {
 
     @EventHandler
     public void onQuit(org.bukkit.event.player.PlayerQuitEvent event) {
-        chatWaiters.remove(event.getPlayer().getUniqueId());
-        chatContexts.remove(event.getPlayer().getUniqueId());
+        synchronized (chatWaiters) {
+            chatWaiters.remove(event.getPlayer().getUniqueId());
+            chatContexts.remove(event.getPlayer().getUniqueId());
+            queuedChat.remove(event.getPlayer().getUniqueId());
+        }
     }
 
     private boolean canEdit(Player player) {
@@ -1002,6 +1005,9 @@ public final class ForgeGui implements Listener {
     private final Map<java.util.UUID, java.util.function.Consumer<String>> chatWaiters = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<java.util.UUID, String> chatContexts = new java.util.concurrent.ConcurrentHashMap<>();
 
+    // 由 chatWaiters 锁保护；移交主线程期间也保留输入归属，避免编辑文本进入公共聊天。
+    private final Map<java.util.UUID, java.util.ArrayDeque<String>> queuedChat = new HashMap<>();
+
     /** 提示玩家在聊天栏输入内容，回调处理结果 */
     private void promptChatInput(Player player, String prompt,
                                  java.util.function.Consumer<String> callback) {
@@ -1019,18 +1025,59 @@ public final class ForgeGui implements Listener {
 
     /** 从异步聊天事件路由输入（由主类的 ChatListener 调用） */
     public boolean handleChatInput(Player player, String message) {
-        var callback = chatWaiters.remove(player.getUniqueId());
-        if (callback == null) return false;
-        chatContexts.remove(player.getUniqueId());
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            if (!player.isOnline() || !canEdit(player)) return;
-            if ("cancel".equalsIgnoreCase(message.trim())) {
-                player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
-                return;
+        var id = player.getUniqueId();
+        synchronized (chatWaiters) {
+            if (!chatWaiters.containsKey(id) && !queuedChat.containsKey(id)) return false;
+            var queue = queuedChat.get(id);
+            if (queue == null) {
+                queue = new java.util.ArrayDeque<>();
+                queuedChat.put(id, queue);
+                var pending = queue;
+                Bukkit.getScheduler().runTask(plugin, () -> drainChatInput(player, pending));
             }
-            callback.accept(message);
-        });
+            queue.addLast(message);
+        }
         return true;
+    }
+
+    private void drainChatInput(Player player, java.util.ArrayDeque<String> pending) {
+        var id = player.getUniqueId();
+        try {
+            while (true) {
+                String message;
+                java.util.function.Consumer<String> callback;
+                synchronized (chatWaiters) {
+                    var queue = queuedChat.get(id);
+                    if (queue != pending) return; // 退出或重新登录后的会话不由旧任务处理
+                    message = queue.pollFirst();
+                    if (message == null) {
+                        queuedChat.remove(id);
+                        return;
+                    }
+                    callback = chatWaiters.remove(id);
+                }
+                chatContexts.remove(id);
+                if (!player.isOnline() || !canEdit(player)) {
+                    synchronized (chatWaiters) {
+                        queuedChat.remove(id);
+                        chatWaiters.remove(id);
+                    }
+                    return;
+                }
+                if (callback == null) continue; // 单次输入结束后，已接收的多余输入不再广播
+                if ("cancel".equalsIgnoreCase(message.trim())) {
+                    player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
+                    continue;
+                }
+                callback.accept(message); // 多行编辑可在这里注册下一行的 waiter
+            }
+        } catch (RuntimeException | Error ex) {
+            synchronized (chatWaiters) {
+                queuedChat.remove(id);
+                chatWaiters.remove(id);
+            }
+            throw ex;
+        }
     }
 
     // ============================================================

@@ -56,6 +56,56 @@ class ForgeGuiTest {
             verifyNoInteractions(callback);
         }
     }
+    @Test void burstResponsesStayPrivateAndReachSuccessiveLoreCallbacksInOrder() throws Exception {
+        var plugin = mock(RPGForgePlugin.class); var gui = new ForgeGui(plugin);
+        var player = mock(Player.class); var id = UUID.randomUUID();
+        when(player.getUniqueId()).thenReturn(id); when(player.isOnline()).thenReturn(true);
+        when(player.hasPermission(RPGForgePlugin.PERM_USE)).thenReturn(true);
+        var field = ForgeGui.class.getDeclaredField("chatWaiters"); field.setAccessible(true);
+        var waiters = (Map<UUID, Consumer<String>>)field.get(gui);
+        var received = new ArrayList<String>();
+        waiters.put(id, line -> {
+            received.add(line);
+            // 回调执行中也保留输入归属，即使下一行 waiter 尚未注册。
+            assertTrue(gui.handleChatInput(player, "third"));
+            waiters.put(id, next -> {
+                received.add(next);
+                waiters.put(id, received::add);
+            });
+        });
+        var scheduler = mock(BukkitScheduler.class);
+        try (var bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            assertTrue(gui.handleChatInput(player, "first"));
+            assertTrue(gui.handleChatInput(player, "second"));
+            assertTrue(received.isEmpty());
+            var task = ArgumentCaptor.forClass(Runnable.class);
+            verify(scheduler).runTask(eq(plugin), task.capture());
+            task.getValue().run();
+            assertEquals(List.of("first", "second", "third"), received);
+            assertFalse(gui.handleChatInput(player, "ordinary chat"));
+        }
+    }
+
+    @Test void queuedInputCannotRunAfterQuit() throws Exception {
+        var plugin = mock(RPGForgePlugin.class); var gui = new ForgeGui(plugin);
+        var player = mock(Player.class); var id = UUID.randomUUID();
+        when(player.getUniqueId()).thenReturn(id);
+        var field = ForgeGui.class.getDeclaredField("chatWaiters"); field.setAccessible(true);
+        var callback = mock(Consumer.class);
+        ((Map<UUID, Consumer<String>>)field.get(gui)).put(id, callback);
+        var scheduler = mock(BukkitScheduler.class);
+        try (var bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getScheduler).thenReturn(scheduler);
+            assertTrue(gui.handleChatInput(player, "private input"));
+            var task = ArgumentCaptor.forClass(Runnable.class);
+            verify(scheduler).runTask(eq(plugin), task.capture());
+            var quit = mock(org.bukkit.event.player.PlayerQuitEvent.class);
+            when(quit.getPlayer()).thenReturn(player); gui.onQuit(quit);
+            task.getValue().run(); verifyNoInteractions(callback);
+        }
+    }
+
     @Test void dragCannotOverwriteEditorIcons() {
         var gui = new ForgeGui(mock(RPGForgePlugin.class));
         var inv = mock(Inventory.class); var view = mock(InventoryView.class);
