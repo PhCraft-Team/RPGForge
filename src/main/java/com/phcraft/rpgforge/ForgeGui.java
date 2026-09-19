@@ -55,6 +55,7 @@ public final class ForgeGui implements Listener {
     }
 
     private void openItemList(Player player, int page) {
+        if (!canEdit(player)) return;
         var holder = new ForgeHolder(ForgeHolder.Type.ITEM_LIST);
         Inventory inv = Bukkit.createInventory(holder, 54, RPGForgePlugin.cc("&b&l⚒ RPG 道具锻造台 ⚒"));
         holder.inventory = inv;
@@ -536,6 +537,7 @@ public final class ForgeGui implements Listener {
 
         event.setCancelled(true);
         Player player = (Player) event.getWhoClicked();
+        if (!canEdit(player)) return;
         int raw = event.getRawSlot();
         if (raw < 0 || raw >= top.getSize()) return;
 
@@ -560,6 +562,27 @@ public final class ForgeGui implements Listener {
         Inventory top = event.getView().getTopInventory();
         if (!(top.getHolder() instanceof ForgeHolder)) return;
         contexts.remove(top);
+    }
+
+    @EventHandler
+    public void onDrag(org.bukkit.event.inventory.InventoryDragEvent event) {
+        Inventory top = event.getView().getTopInventory();
+        if (top.getHolder() instanceof ForgeHolder
+                && event.getRawSlots().stream().anyMatch(slot -> slot < top.getSize())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler
+    public void onQuit(org.bukkit.event.player.PlayerQuitEvent event) {
+        chatWaiters.remove(event.getPlayer().getUniqueId());
+        chatContexts.remove(event.getPlayer().getUniqueId());
+    }
+
+    private boolean canEdit(Player player) {
+        if (player.hasPermission(RPGForgePlugin.PERM_USE)) return true;
+        player.sendMessage(RPGForgePlugin.cc("&c你没有使用 RPG 编辑器的权限。"));
+        return false;
     }
 
     // ----- 列表界面点击 -----
@@ -976,8 +999,8 @@ public final class ForgeGui implements Listener {
     //  聊天输入回调系统
     // ============================================================
 
-    private final Map<java.util.UUID, java.util.function.Consumer<String>> chatWaiters = new HashMap<>();
-    private final Map<java.util.UUID, String> chatContexts = new HashMap<>();
+    private final Map<java.util.UUID, java.util.function.Consumer<String>> chatWaiters = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<java.util.UUID, String> chatContexts = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 提示玩家在聊天栏输入内容，回调处理结果 */
     private void promptChatInput(Player player, String prompt,
@@ -999,11 +1022,14 @@ public final class ForgeGui implements Listener {
         var callback = chatWaiters.remove(player.getUniqueId());
         if (callback == null) return false;
         chatContexts.remove(player.getUniqueId());
-        if ("cancel".equalsIgnoreCase(message.trim())) {
-            player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
-            return true;
-        }
-        callback.accept(message);
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline() || !canEdit(player)) return;
+            if ("cancel".equalsIgnoreCase(message.trim())) {
+                player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
+                return;
+            }
+            callback.accept(message);
+        });
         return true;
     }
 

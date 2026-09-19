@@ -50,6 +50,10 @@ public class ItemRegistry {
                 }
                 RPGItem item = RPGItem.deserialize(map);
                 if (item != null) {
+                    requireValidId(item.id());
+                    if (!file.getName().equalsIgnoreCase(item.id() + ".yml")) {
+                        throw new IllegalArgumentException("文件名与物品 ID 不一致");
+                    }
                     items.put(item.id().toLowerCase(), item);
                 }
             } catch (Exception e) {
@@ -66,7 +70,16 @@ public class ItemRegistry {
         }
     }
 
+    public static boolean isValidId(String id) {
+        return id != null && id.matches("[a-zA-Z0-9_-]+");
+    }
+
+    private static void requireValidId(String id) {
+        if (!isValidId(id)) throw new IllegalArgumentException("物品 ID 只能包含字母、数字、下划线和连字符");
+    }
+
     public void saveItem(RPGItem item) {
+        requireValidId(item.id());
         if (itemsFolder == null) return;
         File file = new File(itemsFolder, item.id() + ".yml");
         try {
@@ -98,11 +111,13 @@ public class ItemRegistry {
     }
 
     public void add(RPGItem item) {
+        requireValidId(item.id());
         items.put(item.id().toLowerCase(), item);
         saveItem(item);
     }
 
     public void remove(String id) {
+        requireValidId(id);
         items.remove(id.toLowerCase());
         File file = new File(itemsFolder, id + ".yml");
         if (file.exists()) {
