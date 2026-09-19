@@ -1,0 +1,22 @@
+name: 插件构建与发布
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    uses: ./.github/workflows/plugin-ci.yml
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+    with:
+      default-branch: main

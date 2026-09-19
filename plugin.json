@@ -1,0 +1,11 @@
+{
+  "pluginName": "RPGForge",
+  "version": "1.3.0",
+  "group": "com.phcraft",
+  "javaVersion": 25,
+  "gradleVersion": "9.1.0",
+  "paperVersion": "26.3.build.19-alpha",
+  "apiVersion": "26.3",
+  "releaseEnabled": false,
+  "compatibility": "运行需 Java 25、Paper 26.3 alpha；仅供隔离测试，未完成真人操作验收。Vault 相关功能需经济服务。"
+}

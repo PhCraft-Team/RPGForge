@@ -1,0 +1,258 @@
+name: 持续集成与发布
+
+on:
+  workflow_call:
+    inputs:
+      default-branch:
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  # PR 只保留最新检查；各次推送独立运行，避免待运行的升版提交被替换。
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  policy:
+    name: PR 规范检查
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查 PR 标题
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|refactor|test|build|ci|chore|perf|revert)(\([A-Za-z0-9._/-]+\))?!?:[[:space:]].+'
+          if [[ ! "$PR_TITLE" =~ $pattern ]]; then
+            echo "PR 标题必须符合：<类型>(可选范围): 中文说明"
+            echo "允许的类型：feat、fix、docs、refactor、test、build、ci、chore、perf、revert"
+            exit 1
+          fi
+
+          if ! printf '%s' "$PR_TITLE" | grep -qP '[\x{4E00}-\x{9FFF}]'; then
+            echo "PR 标题的说明部分必须包含中文。"
+            exit 1
+          fi
+
+  build-test:
+    name: 构建与测试
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.artifact.outputs.version }}
+      artifact_name: ${{ steps.artifact.outputs.name }}
+      release_enabled: ${{ steps.config.outputs.release_enabled }}
+      plugin_name: ${{ steps.config.outputs.plugin_name }}
+      environment: ${{ steps.config.outputs.environment }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 读取插件配置
+        id: config
+        run: python3 .github/scripts/project_config.py
+
+      - name: 测试发布说明生成
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      - name: 配置 Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ steps.config.outputs.java_version }}
+
+      - name: 配置 Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: ${{ steps.config.outputs.gradle_version }}
+          cache-read-only: ${{ github.ref != format('refs/heads/{0}', inputs.default-branch) }}
+
+      - name: 构建并运行测试
+        run: gradle --no-daemon clean build
+
+      - name: 记录实际测试数量
+        if: always()
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          reports = list(Path('build/test-results').glob('**/TEST-*.xml'))
+          totals = dict.fromkeys(('tests', 'failures', 'errors', 'skipped'), 0)
+          for report in reports:
+              root = ET.parse(report).getroot()
+              for key in totals:
+                  totals[key] += int(root.get(key, 0))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              if reports:
+                  summary.write(f"插件测试：{totals['tests']} 项，失败 {totals['failures']}，错误 {totals['errors']}，跳过 {totals['skipped']}。\n")
+              else:
+                  summary.write('未生成插件测试报告；请查看构建日志。当前没有插件测试源码时，test 为 NO-SOURCE，不能视为插件测试通过。\n')
+              summary.write('本次没有启动 Minecraft 服务端或进行游戏内验证。\n')
+
+      - name: 校验版本和 JAR
+        id: artifact
+        run: |
+          project_version="$(gradle --no-daemon -q properties | awk -F': ' '$1 == "version" { print $2; exit }')"
+          python3 .github/scripts/check_artifact.py "$project_version"
+
+      - name: 上传临时构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  release:
+    name: 创建正式 Release
+    needs:
+      - build-test
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', inputs.default-branch) && needs.build-test.outputs.release_enabled == 'true' && github.repository != 'PhCraft-Team/plugin-template'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # 推送独立构建，发布排队执行，避免同一版本同时创建草稿或上传附件。
+    concurrency:
+      group: release-${{ github.workflow }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+    env:
+      VERSION: ${{ needs.build-test.outputs.version }}
+      PLUGIN_NAME: ${{ needs.build-test.outputs.plugin_name }}
+      DEFAULT_BRANCH: ${{ inputs.default-branch }}
+      RELEASE_ENVIRONMENT: ${{ needs.build-test.outputs.environment }}
+      ARTIFACT_NAME: ${{ needs.build-test.outputs.artifact_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 判断是否需要发布
+        id: gate
+        shell: bash
+        run: |
+          tag="v${VERSION}"
+          release_info="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"${tag}\") | [.id, .draft, .html_url, .target_commitish] | @tsv" \
+            | head -n 1)"
+
+          if [[ -n "$release_info" ]]; then
+            IFS=$'\t' read -r release_id is_draft release_url draft_target <<< "$release_info"
+            if [[ "$is_draft" == "false" ]]; then
+              echo "版本 $tag 已发布，本次仅保留构建结果：$release_url"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [[ "$draft_target" != "$GITHUB_SHA" ]]; then
+              echo "同版本草稿不属于当前构建提交，停止发布以避免覆盖：$draft_target"
+              exit 1
+            fi
+
+            echo "检测到未完成的草稿 Release，将继续上传并发布。"
+            echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: 检出发布提交
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 核对已有 Tag 的提交
+        if: steps.gate.outputs.publish == 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.gate.outputs.tag }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "已有 Tag 指向其他提交，停止发布以避免版本和 JAR 不一致：$TAG"
+              exit 1
+            fi
+          fi
+
+      - name: 下载本次构建的 JAR
+        if: steps.gate.outputs.publish == 'true'
+        shell: bash
+        run: |
+          asset_dir="${RUNNER_TEMP}/release-asset"
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir "$asset_dir"
+
+          jar_path="$(find "$asset_dir" -type f -name "$ARTIFACT_NAME" -print -quit)"
+          if [[ -z "$jar_path" || ! -f "$jar_path" ]]; then
+            echo "无法从本次工作流取得构建产物：$ARTIFACT_NAME"
+            exit 1
+          fi
+
+          echo "JAR_PATH=$jar_path" >> "$GITHUB_ENV"
+
+      - name: 生成中文 Release 说明
+        if: steps.gate.outputs.publish == 'true'
+        id: notes
+        run: python3 .github/scripts/release_notes.py
+
+      - name: 创建或更新草稿 Release
+        if: steps.gate.outputs.publish == 'true'
+        id: draft
+        shell: bash
+        env:
+          EXISTING_RELEASE_ID: ${{ steps.gate.outputs.release_id }}
+          NOTES_FILE: ${{ steps.notes.outputs.path }}
+          TAG: ${{ steps.gate.outputs.tag }}
+        run: |
+          payload="${RUNNER_TEMP}/release-payload.json"
+          jq -n \
+            --arg tag "$TAG" \
+            --arg target "$GITHUB_SHA" \
+            --arg name "$PLUGIN_NAME $TAG" \
+            --rawfile body "$NOTES_FILE" \
+            '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: true, prerelease: false}' \
+            > "$payload"
+
+          if [[ -n "$EXISTING_RELEASE_ID" ]]; then
+            release_id="$(gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${EXISTING_RELEASE_ID}" \
+              --input "$payload" --jq '.id')"
+          else
+            release_id="$(gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases" \
+              --input "$payload" --jq '.id')"
+          fi
+
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: 上传 JAR 并发布 Release
+        if: steps.gate.outputs.publish == 'true'
+        shell: bash
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          TAG: ${{ steps.gate.outputs.tag }}
+        run: |
+          gh release upload "$TAG" "$JAR_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+          release_url="$(gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -F draft=false \
+            --jq '.html_url')"
+          echo "Release 已发布：$release_url"

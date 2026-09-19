@@ -1,9 +1,12 @@
+import groovy.json.JsonSlurper
+
 plugins {
     id 'java'
 }
 
-group = 'com.phcraft'
-version = '1.3.0'
+def pluginConfig = new JsonSlurper().parse(file('plugin.json'))
+group = pluginConfig.group
+version = pluginConfig.version
 
 repositories {
     mavenCentral()
@@ -18,22 +21,22 @@ repositories {
 }
 
 dependencies {
-    compileOnly 'io.papermc.paper:paper-api:26.3.build.19-alpha'
+    compileOnly "io.papermc.paper:paper-api:${pluginConfig.paperVersion}"
     compileOnly('com.github.MilkBowl:VaultAPI:1.7') {
         exclude group: 'org.bukkit', module: 'bukkit'
     }
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+    sourceCompatibility = JavaVersion.toVersion(pluginConfig.javaVersion)
+    targetCompatibility = JavaVersion.toVersion(pluginConfig.javaVersion)
 }
 
 tasks.processResources {
-    inputs.property 'version', project.version
-    filesMatching('plugin.yml') {
-        expand 'version': project.version
-    }
+    def values = [pluginName: pluginConfig.pluginName, version: project.version,
+                  apiVersion: pluginConfig.apiVersion]
+    inputs.properties(values)
+    filesMatching('plugin.yml') { expand(values) }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -48,3 +51,5 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.12.1'
 }
 tasks.test { useJUnitPlatform() }
+
+jar { archiveBaseName = pluginConfig.pluginName }

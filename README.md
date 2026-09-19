@@ -124,3 +124,16 @@
 ## 📝 License
 
 MIT License
+
+## 构建和检查
+
+构建配置放在 `plugin.json`。提交 PR 后，GitHub Actions 会检查中文标题、运行构建和测试、核对 JAR 的名称与版本，并上传保留 7 天的构建包。
+
+本预研分支的 `releaseEnabled` 为 `false`，合并后也不会自动发布正式版。修改或升级依赖前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+本地检查：
+
+```bash
+python -X utf8 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+gradle --no-daemon clean build
+```
