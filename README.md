@@ -1,5 +1,7 @@
 # RPGForge — 可视化 RPG 道具编辑器
 
+> Paper 26.3 预研分支：编译目标固定为 `26.3.build.19-alpha`，运行需 Java 25。产物仅供隔离测试，验证结果见 `PAPER_26_3.md`；暂不作为正式服升级依据。
+
 > 在游戏内用 GUI 轻松制作各种特效 RPG 道具，无需写一行配置。
 
 ![Java](https://img.shields.io/badge/Java-25-orange)

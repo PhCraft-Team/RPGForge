@@ -275,6 +275,9 @@ public class RPGRecipe {
                     }
                 }
                 Object ingObj = map.get("ingredients");
+                if (ingObj instanceof org.bukkit.configuration.ConfigurationSection section) {
+                    ingObj = section.getValues(false);
+                }
                 if (ingObj instanceof Map<?, ?> m) {
                     for (var entry : m.entrySet()) {
                         String key = entry.getKey().toString();

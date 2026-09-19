@@ -1,7 +1,7 @@
 name: RPGForge
 version: ${version}
 main: com.phcraft.rpgforge.RPGForgePlugin
-api-version: '1.21'
+api-version: '26.3'
 author: PHCraft
 description: 可视化 RPG 道具编辑器 - 在游戏内用 GUI 制作各种特效道具
 softdepend: [Vault]
