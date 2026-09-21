@@ -119,6 +119,10 @@ public class ForgeCommand {
                                 .executes(ctx -> {
                                     CommandSender sender = ctx.getSource().getSender();
                                     String id = StringArgumentType.getString(ctx, "id").toLowerCase();
+                                    if (!ItemRegistry.isValidId(id)) {
+                                        sender.sendMessage("§c无效的物品 ID：仅允许小写字母、数字和下划线。");
+                                        return 0;
+                                    }
                                     if (plugin.registry().exists(id)) {
                                         sender.sendMessage("§c物品 " + id + " 已存在。");
                                         return 0;

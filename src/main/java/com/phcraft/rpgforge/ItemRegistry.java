@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * RPG 物品注册表 —— 负责加载、保存、查询所有 RPGItem 和 RPGRecipe。
@@ -18,6 +19,8 @@ import java.util.Set;
  * 配方统一存储在 recipes.yml 文件中。
  */
 public class ItemRegistry {
+
+    private static final Pattern ID_PATTERN = Pattern.compile("[a-z0-9_]+");
 
     private final RPGForgePlugin plugin;
     private final Map<String, RPGItem> items = new LinkedHashMap<>();
@@ -29,12 +32,16 @@ public class ItemRegistry {
         this.plugin = plugin;
     }
 
+    /** 校验 ID 合法性：仅允许小写字母、数字、下划线，禁止路径穿越 */
+    public static boolean isValidId(String id) {
+        return id != null && !id.isEmpty() && ID_PATTERN.matcher(id).matches();
+    }
+
     public void loadAll() {
         items.clear();
         itemsFolder = new File(plugin.getDataFolder(), "items");
         if (!itemsFolder.exists()) {
             itemsFolder.mkdirs();
-            // 创建示例物品
             createExampleItems();
         }
 
@@ -49,9 +56,15 @@ public class ItemRegistry {
                     map.put(key, cfg.get(key));
                 }
                 RPGItem item = RPGItem.deserialize(map);
-                if (item != null) {
-                    items.put(item.id().toLowerCase(), item);
+                if (item == null) continue;
+
+                String expectedFileName = item.id().toLowerCase() + ".yml";
+                if (!file.getName().equals(expectedFileName)) {
+                    plugin.getLogger().warning("跳过物品文件 " + file.getName()
+                            + "：文件名与物品 ID '" + item.id() + "' 不一致");
+                    continue;
                 }
+                items.put(item.id().toLowerCase(), item);
             } catch (Exception e) {
                 plugin.getLogger().warning("加载物品失败: " + file.getName() + " - " + e.getMessage());
             }
@@ -68,6 +81,10 @@ public class ItemRegistry {
 
     public void saveItem(RPGItem item) {
         if (itemsFolder == null) return;
+        if (!isValidId(item.id())) {
+            plugin.getLogger().severe("拒绝保存物品：ID '" + item.id() + "' 包含非法字符");
+            return;
+        }
         File file = new File(itemsFolder, item.id() + ".yml");
         try {
             YamlConfiguration cfg = new YamlConfiguration();
@@ -103,8 +120,13 @@ public class ItemRegistry {
     }
 
     public void remove(String id) {
-        items.remove(id.toLowerCase());
-        File file = new File(itemsFolder, id + ".yml");
+        String safeId = id.toLowerCase();
+        if (!isValidId(safeId)) {
+            plugin.getLogger().severe("拒绝删除物品：ID '" + id + "' 包含非法字符");
+            return;
+        }
+        items.remove(safeId);
+        File file = new File(itemsFolder, safeId + ".yml");
         if (file.exists()) {
             file.delete();
         }

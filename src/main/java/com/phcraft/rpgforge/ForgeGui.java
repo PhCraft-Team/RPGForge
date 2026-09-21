@@ -8,6 +8,8 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemFlag;
@@ -18,6 +20,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.function.Consumer;
 
 /**
  * RPGForge 主 GUI 系统。
@@ -536,6 +541,15 @@ public final class ForgeGui implements Listener {
 
         event.setCancelled(true);
         Player player = (Player) event.getWhoClicked();
+
+        // 权限检查：撤销权限后拦截所有编辑操作
+        if (!player.hasPermission(RPGForgePlugin.PERM_USE)) {
+            player.sendMessage(RPGForgePlugin.cc("&c你没有权限使用 RPGForge 编辑器。"));
+            player.closeInventory();
+            cleanupChat(player);
+            return;
+        }
+
         int raw = event.getRawSlot();
         if (raw < 0 || raw >= top.getSize()) return;
 
@@ -562,6 +576,15 @@ public final class ForgeGui implements Listener {
         contexts.remove(top);
     }
 
+    /** 禁止拖拽真实物品进编辑菜单，避免关掉菜单后丢失 */
+    @EventHandler
+    public void onDrag(InventoryDragEvent event) {
+        Inventory top = event.getView().getTopInventory();
+        if (top.getHolder() instanceof ForgeHolder) {
+            event.setCancelled(true);
+        }
+    }
+
     // ----- 列表界面点击 -----
     private void handleListClick(Player player, Inventory top, int raw, EditContext ctx,
                                  InventoryClickEvent event) {
@@ -583,7 +606,7 @@ public final class ForgeGui implements Listener {
             // 注册一次性聊天监听
             awaitChatInput(player, "create-item", input -> {
                 String id = input.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
-                if (id.isEmpty()) {
+                if (!ItemRegistry.isValidId(id)) {
                     player.sendMessage(RPGForgePlugin.cc("&c无效的物品 ID。"));
                     return;
                 }
@@ -973,15 +996,16 @@ public final class ForgeGui implements Listener {
     }
 
     // ============================================================
-    //  聊天输入回调系统
+    //  聊天输入回调系统（队列 + 主线程执行）
     // ============================================================
 
-    private final Map<java.util.UUID, java.util.function.Consumer<String>> chatWaiters = new HashMap<>();
-    private final Map<java.util.UUID, String> chatContexts = new HashMap<>();
+    private final Map<UUID, Consumer<String>> chatWaiters = new HashMap<>();
+    private final Map<UUID, ConcurrentLinkedQueue<String>> chatQueues = new HashMap<>();
+    private final Map<UUID, Boolean> chatProcessing = new HashMap<>();
 
-    /** 提示玩家在聊天栏输入内容，回调处理结果 */
+    /** 提示玩家在聊天栏输入内容，回调在主线程执行 */
     private void promptChatInput(Player player, String prompt,
-                                 java.util.function.Consumer<String> callback) {
+                                 Consumer<String> callback) {
         player.closeInventory();
         player.sendMessage(RPGForgePlugin.cc("&e[RPGForge] " + prompt));
         player.sendMessage(RPGForgePlugin.cc("&7（输入 cancel 取消）"));
@@ -989,22 +1013,85 @@ public final class ForgeGui implements Listener {
     }
 
     private void awaitChatInput(Player player, String context,
-                                java.util.function.Consumer<String> callback) {
+                                Consumer<String> callback) {
         chatWaiters.put(player.getUniqueId(), callback);
-        chatContexts.put(player.getUniqueId(), context);
     }
 
-    /** 从异步聊天事件路由输入（由主类的 ChatListener 调用） */
+    /**
+     * 从异步聊天事件路由输入：立即取消事件，消息入队，
+     * 在主线程按顺序处理回调（GUI 操作线程安全 + 顺序保证）。
+     * 撤销权限后尚未执行的编辑也会被拦截。
+     */
     public boolean handleChatInput(Player player, String message) {
-        var callback = chatWaiters.remove(player.getUniqueId());
-        if (callback == null) return false;
-        chatContexts.remove(player.getUniqueId());
-        if ("cancel".equalsIgnoreCase(message.trim())) {
-            player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
-            return true;
+        if (!player.hasPermission(RPGForgePlugin.PERM_USE)) {
+            cleanupChat(player);
+            return false;
         }
-        callback.accept(message);
+
+        Consumer<String> callback = chatWaiters.get(player.getUniqueId());
+        if (callback == null) return false;
+
+        // 入队并调度主线程处理
+        chatQueues.computeIfAbsent(player.getUniqueId(), k -> new ConcurrentLinkedQueue<>()).add(message);
+
+        if (chatProcessing.get(player.getUniqueId()) == null) {
+            chatProcessing.put(player.getUniqueId(), true);
+            plugin.getServer().getScheduler().runTask(plugin, () -> processChatQueue(player));
+        }
+
         return true;
+    }
+
+    /** 主线程处理队列：按顺序调用回调，每次调用前检查权限和在线状态 */
+    private void processChatQueue(Player player) {
+        ConcurrentLinkedQueue<String> queue = chatQueues.get(player.getUniqueId());
+        if (queue == null) {
+            chatProcessing.remove(player.getUniqueId());
+            return;
+        }
+
+        while (!queue.isEmpty()) {
+            if (!player.isOnline()) {
+                cleanupChat(player);
+                return;
+            }
+            if (!player.hasPermission(RPGForgePlugin.PERM_USE)) {
+                cleanupChat(player);
+                player.sendMessage(RPGForgePlugin.cc("&c你的 RPGForge 编辑权限已被撤销。"));
+                return;
+            }
+
+            String message = queue.poll();
+            Consumer<String> callback = chatWaiters.get(player.getUniqueId());
+            if (callback == null) break;
+
+            if ("cancel".equalsIgnoreCase(message.trim())) {
+                chatWaiters.remove(player.getUniqueId());
+                player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
+                continue;
+            }
+
+            callback.accept(message);
+        }
+
+        // 队列空了，清除处理标记；若期间有新消息入队则重新调度
+        chatProcessing.remove(player.getUniqueId());
+        if (queue != null && !queue.isEmpty() && player.isOnline()) {
+            chatProcessing.put(player.getUniqueId(), true);
+            plugin.getServer().getScheduler().runTask(plugin, () -> processChatQueue(player));
+        }
+    }
+
+    /** 清理玩家的全部聊天输入状态（退出/权限撤销时调用） */
+    private void cleanupChat(Player player) {
+        chatWaiters.remove(player.getUniqueId());
+        chatQueues.remove(player.getUniqueId());
+        chatProcessing.remove(player.getUniqueId());
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        cleanupChat(event.getPlayer());
     }
 
     // ============================================================
