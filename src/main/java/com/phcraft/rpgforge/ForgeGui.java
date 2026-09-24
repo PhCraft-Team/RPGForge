@@ -8,6 +8,8 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemFlag;
@@ -18,6 +20,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * RPGForge 主 GUI 系统。
@@ -536,6 +543,15 @@ public final class ForgeGui implements Listener {
 
         event.setCancelled(true);
         Player player = (Player) event.getWhoClicked();
+
+        // 权限检查：撤销权限后拦截所有编辑操作
+        if (!player.hasPermission(RPGForgePlugin.PERM_USE)) {
+            player.sendMessage(RPGForgePlugin.cc("&c你没有权限使用 RPGForge 编辑器。"));
+            player.closeInventory();
+            cleanupChat(player);
+            return;
+        }
+
         int raw = event.getRawSlot();
         if (raw < 0 || raw >= top.getSize()) return;
 
@@ -562,6 +578,15 @@ public final class ForgeGui implements Listener {
         contexts.remove(top);
     }
 
+    /** 禁止拖拽真实物品进编辑菜单，避免关掉菜单后丢失 */
+    @EventHandler
+    public void onDrag(InventoryDragEvent event) {
+        Inventory top = event.getView().getTopInventory();
+        if (top.getHolder() instanceof ForgeHolder) {
+            event.setCancelled(true);
+        }
+    }
+
     // ----- 列表界面点击 -----
     private void handleListClick(Player player, Inventory top, int raw, EditContext ctx,
                                  InventoryClickEvent event) {
@@ -582,8 +607,8 @@ public final class ForgeGui implements Listener {
                     "&e请在聊天栏输入新物品的 ID（小写字母+下划线）："));
             // 注册一次性聊天监听
             awaitChatInput(player, "create-item", input -> {
-                String id = input.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
-                if (id.isEmpty()) {
+                String id = input.trim().toLowerCase();
+                if (!ItemRegistry.isValidId(id)) {
                     player.sendMessage(RPGForgePlugin.cc("&c无效的物品 ID。"));
                     return;
                 }
@@ -973,38 +998,116 @@ public final class ForgeGui implements Listener {
     }
 
     // ============================================================
-    //  聊天输入回调系统
+    //  聊天输入回调系统（队列 + 主线程执行）
     // ============================================================
 
-    private final Map<java.util.UUID, java.util.function.Consumer<String>> chatWaiters = new HashMap<>();
-    private final Map<java.util.UUID, String> chatContexts = new HashMap<>();
+    /**
+     * The async listener only touches this concurrent map and each state's queue.
+     * The callback and all Bukkit access are confined to the primary thread.
+     */
+    private final Map<UUID, ChatInputState> chatInputs = new ConcurrentHashMap<>();
 
-    /** 提示玩家在聊天栏输入内容，回调处理结果 */
-    private void promptChatInput(Player player, String prompt,
-                                 java.util.function.Consumer<String> callback) {
+    private static final class ChatInputState {
+        private final ConcurrentLinkedQueue<String> messages = new ConcurrentLinkedQueue<>();
+        private final AtomicBoolean scheduled = new AtomicBoolean();
+        private volatile boolean active = true;
+        private Consumer<String> callback;
+    }
+
+    /** 提示玩家在聊天栏输入内容，回调在主线程执行 */
+    private void promptChatInput(Player player, String prompt, Consumer<String> callback) {
         player.closeInventory();
         player.sendMessage(RPGForgePlugin.cc("&e[RPGForge] " + prompt));
         player.sendMessage(RPGForgePlugin.cc("&7（输入 cancel 取消）"));
-        chatWaiters.put(player.getUniqueId(), callback);
+        cleanupChat(player);
+        awaitChatInput(player, "prompt", callback);
     }
 
-    private void awaitChatInput(Player player, String context,
-                                java.util.function.Consumer<String> callback) {
-        chatWaiters.put(player.getUniqueId(), callback);
-        chatContexts.put(player.getUniqueId(), context);
-    }
-
-    /** 从异步聊天事件路由输入（由主类的 ChatListener 调用） */
-    public boolean handleChatInput(Player player, String message) {
-        var callback = chatWaiters.remove(player.getUniqueId());
-        if (callback == null) return false;
-        chatContexts.remove(player.getUniqueId());
-        if ("cancel".equalsIgnoreCase(message.trim())) {
-            player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
-            return true;
+    private void awaitChatInput(Player player, String context, Consumer<String> callback) {
+        UUID id = player.getUniqueId();
+        ChatInputState state = chatInputs.get(id);
+        if (state == null || !state.active) {
+            state = new ChatInputState();
+            chatInputs.put(id, state);
         }
-        callback.accept(message);
+        state.callback = callback;
+    }
+
+    /** AsyncPlayerChatEvent: cancel immediately, enqueue without accessing Bukkit state. */
+    public boolean handleChatInput(Player player, String message) {
+        ChatInputState state = chatInputs.get(player.getUniqueId());
+        if (state == null || !state.active) return false;
+
+        state.messages.add(message);
+        if (state.scheduled.compareAndSet(false, true)) {
+            plugin.getServer().getScheduler().runTask(plugin, () -> processChatQueue(player, state));
+        }
         return true;
+    }
+
+    /** Main thread only. A completed input discards messages queued for that input. */
+    private void processChatQueue(Player player, ChatInputState state) {
+        UUID id = player.getUniqueId();
+        try {
+            String message;
+            while (state.active && chatInputs.get(id) == state
+                    && (message = state.messages.poll()) != null) {
+                if (!player.isOnline()) {
+                    cleanupChat(player);
+                    break;
+                }
+                if (!player.hasPermission(RPGForgePlugin.PERM_USE)) {
+                    cleanupChat(player);
+                    player.sendMessage(RPGForgePlugin.cc("&c你的 RPGForge 编辑权限已被撤销。"));
+                    break;
+                }
+
+                Consumer<String> callback = state.callback;
+                if (callback == null) {
+                    discardChatInput(id, state);
+                    break;
+                }
+                state.callback = null;
+                if ("cancel".equalsIgnoreCase(message.trim())) {
+                    discardChatInput(id, state);
+                    player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
+                    break;
+                }
+
+                callback.accept(message);
+                // A description editor may re-arm this same input for its next line.
+                // Other callbacks finish here; their queued messages must not leak.
+                if (state.callback == null) {
+                    discardChatInput(id, state);
+                    break;
+                }
+            }
+        } finally {
+            state.scheduled.set(false);
+            if (state.active && chatInputs.get(id) == state && !state.messages.isEmpty()
+                    && state.scheduled.compareAndSet(false, true)) {
+                plugin.getServer().getScheduler().runTask(plugin, () -> processChatQueue(player, state));
+            }
+        }
+    }
+
+    private void discardChatInput(UUID id, ChatInputState state) {
+        state.active = false;
+        chatInputs.remove(id, state);
+        state.messages.clear();
+    }
+
+    private void cleanupChat(Player player) {
+        ChatInputState state = chatInputs.remove(player.getUniqueId());
+        if (state != null) {
+            state.active = false;
+            state.messages.clear();
+        }
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        cleanupChat(event.getPlayer());
     }
 
     // ============================================================
@@ -1075,7 +1178,7 @@ public final class ForgeGui implements Listener {
                 player.sendMessage(RPGForgePlugin.cc(
                         "&7输入新内容，或输入 &edone &7完成"));
             }
-            gui.chatWaiters.put(player.getUniqueId(), this::handleLine);
+            gui.awaitChatInput(player, "description", this::handleLine);
         }
     }
 

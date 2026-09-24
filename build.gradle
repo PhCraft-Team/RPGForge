@@ -31,7 +31,7 @@ java {
 
 tasks.processResources {
     inputs.property 'version', project.version
-    filesMatching('plugin.json') {
+    filesMatching('plugin.yml') {
         expand 'version': project.version
     }
 }
