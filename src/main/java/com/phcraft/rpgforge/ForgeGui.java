@@ -1033,6 +1033,12 @@ public final class ForgeGui implements Listener {
         state.callback = callback;
     }
 
+    /** 异步线程安全：该玩家是否存在等待中的聊天输入（供事件监听器先行取消事件） */
+    public boolean hasPendingInput(Player player) {
+        ChatInputState state = chatInputs.get(player.getUniqueId());
+        return state != null && state.active;
+    }
+
     /** AsyncPlayerChatEvent: cancel immediately, enqueue without accessing Bukkit state. */
     public boolean handleChatInput(Player player, String message) {
         ChatInputState state = chatInputs.get(player.getUniqueId());

@@ -24,12 +24,12 @@ public class ChatListener implements Listener {
     @EventHandler(priority = EventPriority.LOWEST)
     public void onChat(AsyncPlayerChatEvent event) {
         Player player = event.getPlayer();
-        String message = event.getMessage();
 
-        // 在主线程处理（GUI 操作必须在主线程）
-        boolean handled = plugin.gui().handleChatInput(player, message);
-        if (handled) {
+        // 存在等待中的编辑输入时，先取消事件，再交给主线程处理：
+        // 即使处理过程中抛出异常，输入内容也不会被广播到公屏
+        if (plugin.gui().hasPendingInput(player)) {
             event.setCancelled(true);
+            plugin.gui().handleChatInput(player, event.getMessage());
         }
     }
 }
