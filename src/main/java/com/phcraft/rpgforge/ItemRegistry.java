@@ -57,6 +57,11 @@ public class ItemRegistry {
                 }
                 RPGItem item = RPGItem.deserialize(map);
                 if (item == null) continue;
+                if (!isValidId(item.id())) {
+                    plugin.getLogger().warning("跳过物品文件 " + file.getName()
+                            + "：物品 ID 包含非法字符");
+                    continue;
+                }
 
                 String expectedFileName = item.id().toLowerCase() + ".yml";
                 if (!file.getName().equals(expectedFileName)) {
@@ -115,7 +120,10 @@ public class ItemRegistry {
     }
 
     public void add(RPGItem item) {
-        items.put(item.id().toLowerCase(), item);
+        if (!isValidId(item.id())) {
+            throw new IllegalArgumentException("无效的物品 ID：" + item.id());
+        }
+        items.put(item.id(), item);
         saveItem(item);
     }
 
@@ -263,9 +271,12 @@ public class ItemRegistry {
                         map.put(k, rSection.get(k));
                     }
                     RPGRecipe recipe = RPGRecipe.deserialize(map);
-                    if (recipe != null) {
-                        recipes.put(recipe.id().toLowerCase(), recipe);
+                    if (recipe == null) continue;
+                    if (!isValidId(recipe.id()) || !key.equals(recipe.id())) {
+                        plugin.getLogger().warning("跳过配方 " + key + "：ID 非法或与 YAML 键不一致");
+                        continue;
                     }
+                    recipes.put(recipe.id(), recipe);
                 }
             }
         } catch (Exception e) {
@@ -283,6 +294,10 @@ public class ItemRegistry {
         try {
             YamlConfiguration cfg = new YamlConfiguration();
             for (RPGRecipe recipe : recipes.values()) {
+                if (!isValidId(recipe.id())) {
+                    plugin.getLogger().warning("跳过保存配方：非法 ID " + recipe.id());
+                    continue;
+                }
                 Map<String, Object> data = recipe.serialize();
                 for (var entry : data.entrySet()) {
                     cfg.set("recipes." + recipe.id() + "." + entry.getKey(), entry.getValue());
@@ -339,7 +354,10 @@ public class ItemRegistry {
     }
 
     public void addRecipe(RPGRecipe recipe) {
-        recipes.put(recipe.id().toLowerCase(), recipe);
+        if (!isValidId(recipe.id())) {
+            throw new IllegalArgumentException("无效的配方 ID：" + recipe.id());
+        }
+        recipes.put(recipe.id(), recipe);
         saveRecipes();
     }
 

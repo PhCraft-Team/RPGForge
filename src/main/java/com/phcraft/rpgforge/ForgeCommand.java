@@ -186,6 +186,10 @@ public class ForgeCommand {
                                                             String rpgItemId = StringArgumentType.getString(ctx, "rpgitem-id").toLowerCase();
                                                             String typeName = StringArgumentType.getString(ctx, "type").toLowerCase();
 
+                                                            if (!ItemRegistry.isValidId(id)) {
+                                                                sender.sendMessage("§c无效的配方 ID：仅允许小写字母、数字和下划线。");
+                                                                return 0;
+                                                            }
                                                             if (plugin.registry().recipeExists(id)) {
                                                                 sender.sendMessage("§c配方 " + id + " 已存在。");
                                                                 return 0;
