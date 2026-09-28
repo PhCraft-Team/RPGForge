@@ -1,0 +1,3 @@
+import groovy.json.JsonSlurper
+
+rootProject.name = new JsonSlurper().parse(file('plugin.json')).pluginName

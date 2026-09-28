@@ -6,3 +6,11 @@
 # 消息配置
 messages:
   prefix: "&e[RPGForge]&r "
+
+# 能力型附魔发动设置（属性型附魔不受影响）
+enchant-activation:
+  # 每次发动消耗的饥饿度（点，1点 = 鸡腿图标半格；创造/旁观模式不消耗）
+  hunger-cost: 2
+  # 每次发动后的冷却间隔（秒），冷却中以物品栏冷却条体现（无提示语）
+  # 周期型附魔（丰饶/堡垒等 TICK 类）不受此项影响，走各自的周期
+  cooldown-seconds: 1

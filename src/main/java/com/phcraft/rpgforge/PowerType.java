@@ -214,6 +214,17 @@ public enum PowerType {
                     "amount", new ParamInfo("消耗数量", ParamType.INTEGER, "每次使用消耗多少个")
             )),
 
+    RETURN_CONTAINER("return-container", "吃完返还容器", "吃完后返还容器物品（仅用于原版吃完不返还容器的食物材质）",
+            "BOWL",
+            Map.of(
+                    "container", "BOWL",
+                    "amount", 1
+            ),
+            Map.of(
+                    "container", new ParamInfo("容器材质", ParamType.STRING, "吃完返还的材质名（如 BOWL、GLASS_BOTTLE）"),
+                    "amount", new ParamInfo("返还数量", ParamType.INTEGER, "每次返还多少个")
+            )),
+
     DURABILITY("durability", "耐久消耗", "使用时消耗耐久度",
             "ANVIL",
             Map.of(
@@ -412,6 +423,108 @@ public enum PowerType {
                     "cost-amount", new ParamInfo("消耗数量", ParamType.INTEGER, "每次维修消耗的物品数量"),
                     "cost-location", new ParamInfo("消耗位置", ParamType.STRING, "inventory=背包任意位置，offhand=副手，mainhand=主手"),
                     "cooldown", new ParamInfo("冷却时间(秒)", ParamType.INTEGER, "0 表示无冷却")
+            )),
+
+    // ===== 拔刀剑风格特效类 =====
+    DOMAIN_SLASH("domain-slash", "领域斩", "以自身为中心展开圆形领域，对范围内所有敌人造成伤害",
+            "NETHER_STAR",
+            Map.of(
+                    "radius", 4.0,
+                    "damage", 6.0
+            ),
+            Map.of(
+                    "radius", new ParamInfo("领域半径", ParamType.DOUBLE, "圆形领域的范围（格）"),
+                    "damage", new ParamInfo("领域伤害", ParamType.DOUBLE, "对范围内每个敌人造成的伤害")
+            )),
+
+    BLADE_WAVE("blade-wave", "气刃", "朝视线方向斩出飞行剑气，贯穿路径上的敌人",
+            "IRON_SWORD",
+            Map.of(
+                    "damage", 4.0,
+                    "distance", 12.0,
+                    "speed", 1.2
+            ),
+            Map.of(
+                    "damage", new ParamInfo("剑气伤害", ParamType.DOUBLE, "命中每个敌人造成的伤害"),
+                    "distance", new ParamInfo("飞行距离", ParamType.DOUBLE, "剑气前进的最大格数"),
+                    "speed", new ParamInfo("飞行速度", ParamType.DOUBLE, "每刻前进的格数（1.0=约20格/秒）")
+            )),
+
+    BLOOD_FEAST("blood-feast", "饮血", "攻击命中时吸取伤害转化为生命，并补充饥饿（攻击事件监听器处理）",
+            "REDSTONE",
+            Map.of(
+                    "percent", 15.0,
+                    "hunger", 1.0
+            ),
+            Map.of(
+                    "percent", new ParamInfo("吸取比例(%)", ParamType.DOUBLE, "按造成伤害的百分比回复生命"),
+                    "hunger", new ParamInfo("补充饥饿", ParamType.DOUBLE, "每次命中补充的饥饿值")
+            )),
+
+    // ===== 工具连锁类 =====
+    CHAIN_BREAK("chain-break", "连环", "破坏方块时连锁破坏周围同类方块（挖矿/砍伐通用）",
+            "DIAMOND_PICKAXE",
+            Map.of(
+                    "count", 8,
+                    "radius", 2.0
+            ),
+            Map.of(
+                    "count", new ParamInfo("连锁数量", ParamType.INTEGER, "连锁破坏的最大方块数"),
+                    "radius", new ParamInfo("连锁半径", ParamType.DOUBLE, "寻找同类方块的范围（格）")
+            )),
+
+    CHAIN_TILL("chain-till", "连锁耕地", "右键耕地时连锁开垦周围的土地",
+            "IRON_HOE",
+            Map.of(
+                    "size", 1
+            ),
+            Map.of(
+                    "size", new ParamInfo("开垦半径", ParamType.INTEGER, "1=3x3，2=5x5（以目标方块为中心）")
+            )),
+
+    CHAIN_HARVEST("chain-harvest", "连锁收获", "右键收割作物时连锁收割范围内所有成熟作物",
+            "GOLDEN_HOE",
+            Map.of(
+                    "radius", 3.0
+            ),
+            Map.of(
+                    "radius", new ParamInfo("收获半径", ParamType.DOUBLE, "连锁收割成熟作物的范围（格）")
+            )),
+
+    // ===== 新增特效类 =====
+    LAUNCH_UP("launch-up", "击飞", "攻击命中时将目标垂直击飞（纯抬升，不击退）",
+            "FEATHER",
+            Map.of(
+                    "lift", 0.8
+            ),
+            Map.of(
+                    "lift", new ParamInfo("抬升力度", ParamType.DOUBLE, "向上击飞的速度（0.8≈升2-3格）")
+            )),
+
+    FORTRESS("fortress", "堡垒", "手持盾牌时每周期回复吸收值（黄色心），总量封顶不随装备叠加",
+            "SHIELD",
+            Map.of(
+                    "amount", 2.0,
+                    "cap", 20.0,
+                    "cooldown", 30
+            ),
+            Map.of(
+                    "amount", new ParamInfo("回复吸收", ParamType.DOUBLE, "每个周期回复的吸收值（点）"),
+                    "cap", new ParamInfo("吸收上限", ParamType.DOUBLE, "吸收值总量的封顶（点）"),
+                    "cooldown", new ParamInfo("周期(秒)", ParamType.INTEGER, "回复间隔，TICK 周期型专用")
+            )),
+
+    INSIGHT("insight", "看破", "对带有 debuff 的目标概率造成倍率伤害，debuff 越多倍率越高（攻击事件监听器处理）",
+            "SPYGLASS",
+            Map.of(
+                    "chance", 50.0,
+                    "base", 1.5,
+                    "per-debuff", 0.25
+            ),
+            Map.of(
+                    "chance", new ParamInfo("触发概率(%)", ParamType.DOUBLE, "命中带 debuff 目标时的触发概率"),
+                    "base", new ParamInfo("基础倍率", ParamType.DOUBLE, "目标带 1 种 debuff 时的伤害倍率"),
+                    "per-debuff", new ParamInfo("每debuff加成", ParamType.DOUBLE, "目标每多 1 种 debuff 额外增加的倍率")
             ));
 
     // ============================================================

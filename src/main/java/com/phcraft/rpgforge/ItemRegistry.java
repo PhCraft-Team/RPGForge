@@ -51,10 +51,7 @@ public class ItemRegistry {
         for (File file : files) {
             try {
                 YamlConfiguration cfg = YamlConfiguration.loadConfiguration(file);
-                Map<String, Object> map = new LinkedHashMap<>();
-                for (String key : cfg.getKeys(false)) {
-                    map.put(key, cfg.get(key));
-                }
+                Map<String, Object> map = YamlUtil.deepMap(cfg);
                 RPGItem item = RPGItem.deserialize(map);
                 if (item == null) continue;
                 if (!isValidId(item.id())) {
@@ -75,7 +72,44 @@ public class ItemRegistry {
             }
         }
 
+        // 迁移物品上已被合并的旧附魔 ID（连锁挖矿/连锁砍伐 → 连环），有变更则落盘
+        for (RPGItem item : items.values()) {
+            if (migrateLegacyEnchants(item)) {
+                saveItem(item);
+            }
+        }
+
+        // 附魔注册表就绪后，为所有物品重建附魔 Power 缓存
+        for (RPGItem item : items.values()) {
+            item.refreshEnchantPowers();
+        }
+
         plugin.getLogger().info("已加载 " + items.size() + " 个 RPG 物品。");
+    }
+
+    /** 旧附魔 ID → 新 ID（预设合并后的一次性迁移映射） */
+    private static final Map<String, String> LEGACY_ENCHANT_IDS = Map.of(
+            "chain_mining", "chain",
+            "chain_lumber", "chain"
+    );
+
+    /**
+     * 把物品上已被合并移除的旧附魔 ID 迁移到新 ID，新 ID 已存在时等级取最大。
+     *
+     * @return 是否有变更
+     */
+    private boolean migrateLegacyEnchants(RPGItem item) {
+        boolean changed = false;
+        for (var e : LEGACY_ENCHANT_IDS.entrySet()) {
+            Integer level = item.enchantments().remove(e.getKey());
+            if (level == null) continue;
+            int merged = Math.max(level, item.enchantments().getOrDefault(e.getValue(), 0));
+            item.enchantments().put(e.getValue(), merged);
+            plugin.getLogger().info("迁移：物品 " + item.id() + " 的附魔 "
+                    + e.getKey() + " → " + e.getValue() + " Lv" + merged);
+            changed = true;
+        }
+        return changed;
     }
 
     public void saveAll() {
@@ -264,12 +298,9 @@ public class ItemRegistry {
             ConfigurationSection section = cfg.getConfigurationSection("recipes");
             if (section != null) {
                 for (String key : section.getKeys(false)) {
-                    Map<String, Object> map = new LinkedHashMap<>();
                     ConfigurationSection rSection = section.getConfigurationSection(key);
                     if (rSection == null) continue;
-                    for (String k : rSection.getKeys(false)) {
-                        map.put(k, rSection.get(k));
-                    }
+                    Map<String, Object> map = YamlUtil.deepMap(rSection);
                     RPGRecipe recipe = RPGRecipe.deserialize(map);
                     if (recipe == null) continue;
                     if (!isValidId(recipe.id()) || !key.equals(recipe.id())) {

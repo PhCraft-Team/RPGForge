@@ -1,0 +1,11 @@
+{
+  "pluginName": "RPGForge",
+  "version": "1.6.1",
+  "group": "com.phcraft",
+  "javaVersion": 25,
+  "gradleVersion": "9.1.0",
+  "paperVersion": "1.21.4-R0.1-SNAPSHOT",
+  "apiVersion": "1.21",
+  "releaseEnabled": true,
+  "compatibility": "运行需 Java 25；编译依赖 Paper API 1.21.4 与 VaultAPI（Vault 为可选经济依赖）；已在 Paper 26.2 离线模式服务端部署并游戏内验证主要功能。"
+}

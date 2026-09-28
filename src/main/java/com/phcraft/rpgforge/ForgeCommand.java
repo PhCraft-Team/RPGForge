@@ -107,10 +107,13 @@ public class ForgeCommand {
                 .then(Commands.literal("reload")
                         .executes(ctx -> {
                             CommandSender sender = ctx.getSource().getSender();
+                            plugin.reloadConfig();
+                            plugin.enchantRegistry().loadAll();
                             plugin.registry().loadAll();
                             plugin.registry().reloadRecipes();
-                            sender.sendMessage("§a[RPGForge] 重载完成，共 "
+                            sender.sendMessage("§a[RPGForge] 重载完成（含 config.yml，附魔发动冷却/饥饿消耗设置即时生效），共 "
                                     + plugin.registry().all().size() + " 个物品，"
+                                    + plugin.enchantRegistry().all().size() + " 个附魔预设，"
                                     + plugin.registry().allRecipes().size() + " 个配方。");
                             return Command.SINGLE_SUCCESS;
                         }))
@@ -305,7 +308,9 @@ public class ForgeCommand {
         for (RPGItem item : plugin.registry().all()) {
             sender.sendMessage(" §7▪ §f" + item.id()
                     + " §8- " + RPGForgePlugin.cc(item.displayName())
-                    + " §7(" + item.powers().size() + " 个能力)");
+                    + " §7(" + item.powers().size() + " 个能力"
+                    + (item.enchantments().isEmpty() ? "" : "，" + item.enchantments().size() + " 个附魔")
+                    + "§7)");
         }
     }
 
