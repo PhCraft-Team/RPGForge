@@ -20,6 +20,21 @@ dependencies {
     compileOnly('com.github.MilkBowl:VaultAPI:1.7') {
         exclude group: 'org.bukkit', module: 'bukkit'
     }
+    // 测试加载引用 Bukkit/Vault 类型的主类时需要运行时可见
+    testImplementation "io.papermc.paper:paper-api:${pluginConfig.paperVersion}"
+    testImplementation('com.github.MilkBowl:VaultAPI:1.7') {
+        exclude group: 'org.bukkit', module: 'bukkit'
+    }
+    testImplementation 'org.mockito:mockito-core:5.17.0'
+    testImplementation platform('org.junit:junit-bom:5.12.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    // JDK 25+ 类文件版本超出 Mockito 内置 ByteBuddy 支持范围，实验模式放行（CI 的 Java 21 无副作用）
+    jvmArgs '-Dnet.bytebuddy.experimental=true'
 }
 
 java {
