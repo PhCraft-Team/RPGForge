@@ -3,6 +3,7 @@ package com.phcraft.rpgforge;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
@@ -14,6 +15,7 @@ import org.bukkit.entity.Fireball;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
@@ -49,6 +51,7 @@ final class PowerExecutor {
             case KNOCKBACK -> knockbackTarget(player, target, params);
             case SCALE -> applyScale(player, target, params);
             case CONSUME -> false; // 由事件监听器统一处理
+            case RETURN_CONTAINER -> giveContainer(player, params);
             case DURABILITY -> false; // 由事件监听器统一处理
             case FIREBALL -> launchFireball(player, params);
             case ARROW -> launchArrow(player, params);
@@ -65,6 +68,16 @@ final class PowerExecutor {
             case SHIELD -> applyShield(player, params);
             case ECONOMY_COST -> economyCost(player, params);
             case REPAIR -> false; // 由事件监听器处理（需要访问 itemStack）
+            // 拔刀剑风格特效
+            case DOMAIN_SLASH -> domainSlash(player, params);
+            case BLADE_WAVE -> bladeWave(player, params);
+            case BLOOD_FEAST -> false;    // 由攻击事件监听器处理
+            case CHAIN_BREAK -> false;   // 由方块破坏监听器处理（需要 block）
+            case CHAIN_TILL -> false;    // 由右键监听器处理（需要 block）
+            case CHAIN_HARVEST -> false; // 由右键监听器处理（需要 block）
+            case LAUNCH_UP -> launchUp(target, params);
+            case FORTRESS -> fortressAbsorption(player, params);
+            case INSIGHT -> false; // 由攻击事件监听器处理
         };
     }
 
@@ -145,6 +158,7 @@ final class PowerExecutor {
             }
         }
         if (loc.getWorld() == null) return false;
+        org.bukkit.Bukkit.getLogger().info("[RPGForge-DEBUG] strikeLightning 执行 at " + loc);
         loc.getWorld().strikeLightning(loc);
         double damage = getDbl(params, "damage", 5.0);
         if (target != null && damage > 0) {
@@ -230,6 +244,24 @@ final class PowerExecutor {
 
         float newSat = Math.min(player.getFoodLevel(), player.getSaturation() + saturation);
         player.setSaturation(newSat);
+        return true;
+    }
+
+    // ===== 吃完返还容器 =====
+    private static boolean giveContainer(Player player, Map<String, Object> params) {
+        String containerName = getStr(params, "container", "BOWL");
+        Material material;
+        try {
+            material = Material.valueOf(containerName.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+        int amount = Math.max(1, getInt(params, "amount", 1));
+
+        var leftover = player.getInventory().addItem(new ItemStack(material, amount));
+        for (ItemStack rest : leftover.values()) {
+            player.getWorld().dropItemNaturally(player.getLocation(), rest);
+        }
         return true;
     }
 
@@ -584,5 +616,251 @@ final class PowerExecutor {
         if (v instanceof Boolean b) return b;
         if (v instanceof String s) return Boolean.parseBoolean(s);
         return def;
+    }
+
+    // ============================================================
+    //  拔刀剑风格特效
+    // ============================================================
+
+    // ===== 领域斩（残月斩风格：360° 圆形 AOE + 双层刀光圆环） =====
+    private static boolean domainSlash(Player player, Map<String, Object> params) {
+        double radius = getDbl(params, "radius", 4.0);
+        double damage = getDbl(params, "damage", 6.0);
+        Location center = player.getLocation();
+
+        int hit = 0;
+        for (LivingEntity entity : player.getWorld().getNearbyEntitiesByType(
+                LivingEntity.class, center, radius)) {
+            if (entity.equals(player)) continue;
+            entity.damage(damage, player);
+            hit++;
+        }
+
+        // 双层刀光圆环（内环 + 外环 SWEEP）
+        for (int ring = 0; ring < 2; ring++) {
+            double r = radius * (ring == 0 ? 0.6 : 0.95);
+            for (int i = 0; i < 24; i++) {
+                double angle = 2 * Math.PI * i / 24;
+                Location point = center.clone().add(
+                        Math.cos(angle) * r, 1.0 + ring * 0.4, Math.sin(angle) * r);
+                player.getWorld().spawnParticle(Particle.SWEEP_ATTACK, point, 1, 0, 0, 0, 0);
+            }
+        }
+        // 红色尘埃地面环
+        for (int i = 0; i < 30; i++) {
+            double angle = 2 * Math.PI * i / 30;
+            Location point = center.clone().add(
+                    Math.cos(angle) * radius, 0.2, Math.sin(angle) * radius);
+            player.getWorld().spawnParticle(Particle.DUST, point, 1, 0, 0, 0, 0,
+                    new Particle.DustOptions(Color.RED, 1.4f));
+        }
+        player.getWorld().playSound(center, Sound.ENTITY_PLAYER_ATTACK_SWEEP, 1.2f, 0.6f);
+        player.getWorld().playSound(center, Sound.ENTITY_WITHER_HURT, 0.6f, 1.4f);
+
+        if (hit > 0) {
+            player.sendActionBar(net.kyori.adventure.text.Component
+                    .text("领域展开 — " + hit + " 个目标")
+                    .color(net.kyori.adventure.text.format.NamedTextColor.RED));
+        }
+        return true;
+    }
+
+    // ===== 气刃（飞行剑气，逐刻推进 + 穿透命中） =====
+    private static boolean bladeWave(Player player, Map<String, Object> params) {
+        double damage = getDbl(params, "damage", 4.0);
+        double distance = getDbl(params, "distance", 12.0);
+        double speed = getDbl(params, "speed", 1.2);
+
+        Location start = player.getEyeLocation();
+        Vector dir = start.getDirection().normalize();
+        player.getWorld().playSound(start, Sound.ITEM_TRIDENT_THROW, 1.0f, 1.5f);
+
+        new org.bukkit.scheduler.BukkitRunnable() {
+            double traveled = 0;
+            final java.util.Set<UUID> hitEntities =
+                    java.util.Collections.newSetFromMap(new java.util.HashMap<>());
+
+            @Override
+            public void run() {
+                if (!player.isOnline()) {
+                    cancel();
+                    return;
+                }
+                traveled += speed;
+                Location pos = start.clone().add(dir.clone().multiply(traveled));
+                if (traveled > distance || pos.getBlock().getType().isSolid()) {
+                    player.getWorld().spawnParticle(Particle.CRIT, pos, 15, 0.3, 0.3, 0.3, 0.2);
+                    cancel();
+                    return;
+                }
+                // 拖尾：CRIT 火花 + SWEEP 核心
+                player.getWorld().spawnParticle(Particle.CRIT, pos, 8, 0.15, 0.15, 0.15, 0.1);
+                player.getWorld().spawnParticle(Particle.SWEEP_ATTACK, pos, 1, 0, 0, 0, 0);
+                // 命中判定（1.5 格范围，穿透，去重）
+                for (LivingEntity entity : player.getWorld().getNearbyEntitiesByType(
+                        LivingEntity.class, pos, 1.5)) {
+                    if (entity.equals(player)) continue;
+                    if (!hitEntities.add(entity.getUniqueId())) continue;
+                    entity.damage(damage, player);
+                    player.getWorld().spawnParticle(Particle.CRIT,
+                            entity.getLocation().add(0, 1, 0), 12, 0.3, 0.4, 0.3, 0.15);
+                }
+            }
+        }.runTaskTimer(RPGForgePlugin.instance(), 1, 1);
+        return true;
+    }
+
+    // ============================================================
+    //  工具连锁
+    // ============================================================
+
+    // ===== 连锁采集（BFS 同类方块连锁破坏） =====
+    static boolean chainBreak(Player player, org.bukkit.block.Block origin, Map<String, Object> params) {
+        int count = getInt(params, "count", 8);
+        int radius = (int) Math.max(1, Math.round(getDbl(params, "radius", 2.0)));
+
+        java.util.List<org.bukkit.block.Block> chain = findChain(origin, count, radius);
+        if (chain.isEmpty()) return false;
+        ItemStack tool = player.getInventory().getItemInMainHand();
+
+        int broken = 0;
+        for (org.bukkit.block.Block b : chain) {
+            // breakNaturally 不触发 BlockBreakEvent，天然防止连锁递归
+            if (b.breakNaturally(tool)) {
+                broken++;
+                b.getWorld().spawnParticle(Particle.CRIT,
+                        b.getLocation().add(0.5, 0.5, 0.5), 5, 0.25, 0.25, 0.25, 0.05);
+            }
+        }
+        if (broken > 0) {
+            player.getWorld().playSound(origin.getLocation(),
+                    Sound.BLOCK_NOTE_BLOCK_PLING, 0.8f, 1.6f);
+            player.sendActionBar(net.kyori.adventure.text.Component
+                    .text("连锁采集 × " + broken)
+                    .color(net.kyori.adventure.text.format.NamedTextColor.GOLD));
+        }
+        return broken > 0;
+    }
+
+    /** 六向 BFS 搜索同类方块（限制数量与半径） */
+    private static java.util.List<org.bukkit.block.Block> findChain(
+            org.bukkit.block.Block origin, int count, int radius) {
+        java.util.List<org.bukkit.block.Block> result = new java.util.ArrayList<>();
+        java.util.Deque<org.bukkit.block.Block> queue = new java.util.ArrayDeque<>();
+        java.util.Set<org.bukkit.block.Block> visited = new java.util.HashSet<>();
+        org.bukkit.Material type = origin.getType();
+        int[] dx = {1, -1, 0, 0, 0, 0};
+        int[] dy = {0, 0, 1, -1, 0, 0};
+        int[] dz = {0, 0, 0, 0, 1, -1};
+
+        queue.add(origin);
+        visited.add(origin);
+        while (!queue.isEmpty() && result.size() < count) {
+            org.bukkit.block.Block cur = queue.poll();
+            for (int i = 0; i < 6; i++) {
+                org.bukkit.block.Block next = cur.getRelative(dx[i], dy[i], dz[i]);
+                if (!visited.add(next)) continue;
+                if (!next.getType().equals(type)) continue;
+                if (next.getLocation().distance(origin.getLocation()) > radius) continue;
+                result.add(next);
+                queue.add(next);
+                if (result.size() >= count) break;
+            }
+        }
+        return result;
+    }
+
+    // ===== 连锁耕地（以目标方块为中心开垦 size*2+1 的方形） =====
+    static boolean chainTill(Player player, org.bukkit.block.Block center, Map<String, Object> params) {
+        int size = Math.max(1, getInt(params, "size", 1));
+        int tilled = 0;
+        for (int dx = -size; dx <= size; dx++) {
+            for (int dz = -size; dz <= size; dz++) {
+                org.bukkit.block.Block b = center.getRelative(dx, 0, dz);
+                org.bukkit.block.Block above = b.getRelative(0, 1, 0);
+                if ((b.getType() == org.bukkit.Material.DIRT || b.getType() == org.bukkit.Material.GRASS_BLOCK)
+                        && above.getType().isAir()) {
+                    b.setType(org.bukkit.Material.FARMLAND);
+                    player.getWorld().spawnParticle(Particle.HAPPY_VILLAGER,
+                            above.getLocation().add(0.5, 0.3, 0.5), 3, 0.2, 0.1, 0.2, 0);
+                    tilled++;
+                }
+            }
+        }
+        if (tilled > 0) {
+            player.getWorld().playSound(center.getLocation(),
+                    Sound.ITEM_HOE_TILL, 1.0f, 1.0f);
+        }
+        return tilled > 0;
+    }
+
+    // ===== 连锁收获（半径内成熟作物收割 + 自动回种） =====
+    private static final java.util.Set<org.bukkit.Material> HARVESTABLE = java.util.Set.of(
+            org.bukkit.Material.WHEAT, org.bukkit.Material.CARROTS, org.bukkit.Material.POTATOES,
+            org.bukkit.Material.BEETROOTS, org.bukkit.Material.NETHER_WART,
+            org.bukkit.Material.SWEET_BERRY_BUSH, org.bukkit.Material.COCOA);
+
+    static boolean chainHarvest(Player player, org.bukkit.block.Block center, Map<String, Object> params) {
+        double radius = getDbl(params, "radius", 3.0);
+        ItemStack tool = player.getInventory().getItemInMainHand();
+        int harvested = 0;
+
+        int r = (int) Math.ceil(radius);
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dz = -r; dz <= r; dz++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    if (dx * dx + dz * dz + dy * dy > radius * radius) continue;
+                    org.bukkit.block.Block b = center.getRelative(dx, dy, dz);
+                    if (!HARVESTABLE.contains(b.getType())) continue;
+                    if (!(b.getBlockData() instanceof org.bukkit.block.data.Ageable age)) continue;
+                    if (age.getAge() < age.getMaximumAge()) continue;
+                    // 掉落成熟产物，重置回幼苗（自动回种）
+                    for (ItemStack drop : b.getDrops(tool)) {
+                        b.getWorld().dropItemNaturally(b.getLocation().add(0.5, 0.5, 0.5), drop);
+                    }
+                    age.setAge(0);
+                    b.setBlockData(age);
+                    player.getWorld().spawnParticle(Particle.HAPPY_VILLAGER,
+                            b.getLocation().add(0.5, 0.4, 0.5), 4, 0.25, 0.15, 0.25, 0);
+                    harvested++;
+                }
+            }
+        }
+        if (harvested > 0) {
+            player.getWorld().playSound(center.getLocation(),
+                    Sound.BLOCK_CROP_BREAK, 0.8f, 1.2f);
+            player.sendActionBar(net.kyori.adventure.text.Component
+                    .text("连锁收获 × " + harvested)
+                    .color(net.kyori.adventure.text.format.NamedTextColor.GREEN));
+        }
+        return harvested > 0;
+    }
+
+    // ============================================================
+    //  击飞 / 堡垒
+    // ============================================================
+
+    // ===== 击飞（纯垂直抬升，不击退；原版攻击自带的击退不受影响） =====
+    private static boolean launchUp(LivingEntity target, Map<String, Object> params) {
+        if (target == null) return false;
+        double lift = getDbl(params, "lift", 0.8);
+        target.setVelocity(new Vector(0, lift, 0));
+        target.getWorld().spawnParticle(Particle.CLOUD,
+                target.getLocation(), 10, 0.3, 0.1, 0.3, 0.05);
+        target.getWorld().playSound(target.getLocation(),
+                Sound.ENTITY_IRON_GOLEM_ATTACK, 0.7f, 1.2f);
+        return true;
+    }
+
+    // ===== 堡垒（周期回复吸收值，封顶不叠加） =====
+    private static boolean fortressAbsorption(Player player, Map<String, Object> params) {
+        double amount = getDbl(params, "amount", 2.0);
+        double cap = getDbl(params, "cap", 20.0);
+        double current = player.getAbsorptionAmount();
+        if (current >= cap) return true;
+        player.setAbsorptionAmount(Math.min(cap, current + amount));
+        player.getWorld().playSound(player.getLocation(),
+                Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.4f, 1.6f);
+        return true;
     }
 }

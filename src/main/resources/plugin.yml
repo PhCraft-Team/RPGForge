@@ -1,5 +1,5 @@
-name: ${pluginName}
-version: ${version}
+name: '${pluginName}'
+version: '${version}'
 main: com.phcraft.rpgforge.RPGForgePlugin
 api-version: '${apiVersion}'
 author: PHCraft

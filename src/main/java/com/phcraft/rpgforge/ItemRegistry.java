@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * RPG 物品注册表 —— 负责加载、保存、查询所有 RPGItem 和 RPGRecipe。
@@ -18,6 +19,8 @@ import java.util.Set;
  * 配方统一存储在 recipes.yml 文件中。
  */
 public class ItemRegistry {
+
+    private static final Pattern ID_PATTERN = Pattern.compile("[a-z0-9_]+");
 
     private final RPGForgePlugin plugin;
     private final Map<String, RPGItem> items = new LinkedHashMap<>();
@@ -29,12 +32,16 @@ public class ItemRegistry {
         this.plugin = plugin;
     }
 
+    /** 校验 ID 合法性：仅允许小写字母、数字、下划线，禁止路径穿越 */
+    public static boolean isValidId(String id) {
+        return id != null && !id.isEmpty() && ID_PATTERN.matcher(id).matches();
+    }
+
     public void loadAll() {
         items.clear();
         itemsFolder = new File(plugin.getDataFolder(), "items");
         if (!itemsFolder.exists()) {
             itemsFolder.mkdirs();
-            // 创建示例物品
             createExampleItems();
         }
 
@@ -44,24 +51,65 @@ public class ItemRegistry {
         for (File file : files) {
             try {
                 YamlConfiguration cfg = YamlConfiguration.loadConfiguration(file);
-                Map<String, Object> map = new LinkedHashMap<>();
-                for (String key : cfg.getKeys(false)) {
-                    map.put(key, cfg.get(key));
-                }
+                Map<String, Object> map = YamlUtil.deepMap(cfg);
                 RPGItem item = RPGItem.deserialize(map);
-                if (item != null) {
-                    requireValidId(item.id());
-                    if (!file.getName().equalsIgnoreCase(item.id() + ".yml")) {
-                        throw new IllegalArgumentException("文件名与物品 ID 不一致");
-                    }
-                    items.put(item.id().toLowerCase(), item);
+                if (item == null) continue;
+                if (!isValidId(item.id())) {
+                    plugin.getLogger().warning("跳过物品文件 " + file.getName()
+                            + "：物品 ID 包含非法字符");
+                    continue;
                 }
+
+                String expectedFileName = item.id().toLowerCase() + ".yml";
+                if (!file.getName().equals(expectedFileName)) {
+                    plugin.getLogger().warning("跳过物品文件 " + file.getName()
+                            + "：文件名与物品 ID '" + item.id() + "' 不一致");
+                    continue;
+                }
+                items.put(item.id().toLowerCase(), item);
             } catch (Exception e) {
                 plugin.getLogger().warning("加载物品失败: " + file.getName() + " - " + e.getMessage());
             }
         }
 
+        // 迁移物品上已被合并的旧附魔 ID（连锁挖矿/连锁砍伐 → 连环），有变更则落盘
+        for (RPGItem item : items.values()) {
+            if (migrateLegacyEnchants(item)) {
+                saveItem(item);
+            }
+        }
+
+        // 附魔注册表就绪后，为所有物品重建附魔 Power 缓存
+        for (RPGItem item : items.values()) {
+            item.refreshEnchantPowers();
+        }
+
         plugin.getLogger().info("已加载 " + items.size() + " 个 RPG 物品。");
+    }
+
+    /** 旧附魔 ID → 新 ID（预设合并后的一次性迁移映射） */
+    private static final Map<String, String> LEGACY_ENCHANT_IDS = Map.of(
+            "chain_mining", "chain",
+            "chain_lumber", "chain"
+    );
+
+    /**
+     * 把物品上已被合并移除的旧附魔 ID 迁移到新 ID，新 ID 已存在时等级取最大。
+     *
+     * @return 是否有变更
+     */
+    private boolean migrateLegacyEnchants(RPGItem item) {
+        boolean changed = false;
+        for (var e : LEGACY_ENCHANT_IDS.entrySet()) {
+            Integer level = item.enchantments().remove(e.getKey());
+            if (level == null) continue;
+            int merged = Math.max(level, item.enchantments().getOrDefault(e.getValue(), 0));
+            item.enchantments().put(e.getValue(), merged);
+            plugin.getLogger().info("迁移：物品 " + item.id() + " 的附魔 "
+                    + e.getKey() + " → " + e.getValue() + " Lv" + merged);
+            changed = true;
+        }
+        return changed;
     }
 
     public void saveAll() {
@@ -70,17 +118,12 @@ public class ItemRegistry {
         }
     }
 
-    public static boolean isValidId(String id) {
-        return id != null && id.matches("[a-zA-Z0-9_-]+");
-    }
-
-    private static void requireValidId(String id) {
-        if (!isValidId(id)) throw new IllegalArgumentException("物品 ID 只能包含字母、数字、下划线和连字符");
-    }
-
     public void saveItem(RPGItem item) {
-        requireValidId(item.id());
         if (itemsFolder == null) return;
+        if (!isValidId(item.id())) {
+            plugin.getLogger().severe("拒绝保存物品：ID '" + item.id() + "' 包含非法字符");
+            return;
+        }
         File file = new File(itemsFolder, item.id() + ".yml");
         try {
             YamlConfiguration cfg = new YamlConfiguration();
@@ -111,15 +154,21 @@ public class ItemRegistry {
     }
 
     public void add(RPGItem item) {
-        requireValidId(item.id());
-        items.put(item.id().toLowerCase(), item);
+        if (!isValidId(item.id())) {
+            throw new IllegalArgumentException("无效的物品 ID：" + item.id());
+        }
+        items.put(item.id(), item);
         saveItem(item);
     }
 
     public void remove(String id) {
-        requireValidId(id);
-        items.remove(id.toLowerCase());
-        File file = new File(itemsFolder, id + ".yml");
+        String safeId = id.toLowerCase();
+        if (!isValidId(safeId)) {
+            plugin.getLogger().severe("拒绝删除物品：ID '" + id + "' 包含非法字符");
+            return;
+        }
+        items.remove(safeId);
+        File file = new File(itemsFolder, safeId + ".yml");
         if (file.exists()) {
             file.delete();
         }
@@ -249,16 +298,16 @@ public class ItemRegistry {
             ConfigurationSection section = cfg.getConfigurationSection("recipes");
             if (section != null) {
                 for (String key : section.getKeys(false)) {
-                    Map<String, Object> map = new LinkedHashMap<>();
                     ConfigurationSection rSection = section.getConfigurationSection(key);
                     if (rSection == null) continue;
-                    for (String k : rSection.getKeys(false)) {
-                        map.put(k, rSection.get(k));
-                    }
+                    Map<String, Object> map = YamlUtil.deepMap(rSection);
                     RPGRecipe recipe = RPGRecipe.deserialize(map);
-                    if (recipe != null) {
-                        recipes.put(recipe.id().toLowerCase(), recipe);
+                    if (recipe == null) continue;
+                    if (!isValidId(recipe.id()) || !key.equals(recipe.id())) {
+                        plugin.getLogger().warning("跳过配方 " + key + "：ID 非法或与 YAML 键不一致");
+                        continue;
                     }
+                    recipes.put(recipe.id(), recipe);
                 }
             }
         } catch (Exception e) {
@@ -276,6 +325,10 @@ public class ItemRegistry {
         try {
             YamlConfiguration cfg = new YamlConfiguration();
             for (RPGRecipe recipe : recipes.values()) {
+                if (!isValidId(recipe.id())) {
+                    plugin.getLogger().warning("跳过保存配方：非法 ID " + recipe.id());
+                    continue;
+                }
                 Map<String, Object> data = recipe.serialize();
                 for (var entry : data.entrySet()) {
                     cfg.set("recipes." + recipe.id() + "." + entry.getKey(), entry.getValue());
@@ -332,7 +385,10 @@ public class ItemRegistry {
     }
 
     public void addRecipe(RPGRecipe recipe) {
-        recipes.put(recipe.id().toLowerCase(), recipe);
+        if (!isValidId(recipe.id())) {
+            throw new IllegalArgumentException("无效的配方 ID：" + recipe.id());
+        }
+        recipes.put(recipe.id(), recipe);
         saveRecipes();
     }
 

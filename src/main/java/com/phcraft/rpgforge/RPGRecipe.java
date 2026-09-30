@@ -2,6 +2,7 @@ package com.phcraft.rpgforge;
 
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.Recipe;
 import org.bukkit.inventory.ShapedRecipe;
@@ -275,11 +276,14 @@ public class RPGRecipe {
                     }
                 }
                 Object ingObj = map.get("ingredients");
-                if (ingObj instanceof org.bukkit.configuration.ConfigurationSection section) {
-                    ingObj = section.getValues(false);
-                }
+                Map<?, ?> ingMap = null;
                 if (ingObj instanceof Map<?, ?> m) {
-                    for (var entry : m.entrySet()) {
+                    ingMap = m;
+                } else if (ingObj instanceof ConfigurationSection cs) {
+                    ingMap = cs.getValues(false);
+                }
+                if (ingMap != null) {
+                    for (var entry : ingMap.entrySet()) {
                         String key = entry.getKey().toString();
                         if (!key.isEmpty()) {
                             char c = key.charAt(0);

@@ -38,6 +38,11 @@ public class PowerTriggerListener implements Listener {
     /** 冷却记录：playerUUID + ":" + itemId + ":" + powerIndex → 结束时间戳(ms) */
     private final Map<String, Long> cooldowns = new HashMap<>();
 
+    /** 附魔发动锁：playerUUID + ":" + itemId → 解锁时间戳(ms)；发动一次 2 饥饿 + 物品冷却条 */
+    private final Map<String, Long> enchantLocks = new HashMap<>();
+    /** 附魔发动锁的获取游戏刻：同一事件内的多个附魔 Power 共享同一次发动 */
+    private final Map<String, Integer> enchantLockTick = new HashMap<>();
+
     public PowerTriggerListener(RPGForgePlugin plugin) {
         this.plugin = plugin;
 
@@ -47,8 +52,61 @@ public class PowerTriggerListener implements Listener {
             public void run() {
                 long now = System.currentTimeMillis();
                 cooldowns.entrySet().removeIf(e -> e.getValue() <= now);
+                enchantLocks.entrySet().removeIf(e -> e.getValue() <= now);
+                enchantLockTick.keySet().retainAll(enchantLocks.keySet());
             }
         }.runTaskTimer(plugin, 100, 100);
+
+        // 每秒触发 TICK 类 Power（主手 + 装备位的 RPG 物品，如「丰饶」防具附魔）
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                for (Player p : plugin.getServer().getOnlinePlayers()) {
+                    for (org.bukkit.inventory.ItemStack it : equippedAndMainHand(p)) {
+                        String id = RPGItem.readItemId(it);
+                        if (id == null) continue;
+                        RPGItem ri = plugin.registry().get(id);
+                        if (ri == null) continue;
+                        for (RPGPower power : ri.effectivePowers()) {
+                            if (!power.triggers().contains(TriggerType.TICK)) continue;
+                            if (!checkAndApplyCooldown(p, ri.id(), power)) continue;
+                            power.type().execute(p, null, null, power.params(), ri);
+                        }
+                    }
+                }
+            }
+        }.runTaskTimer(plugin, 20, 20);
+    }
+
+    private java.util.List<org.bukkit.inventory.ItemStack> equippedAndMainHand(Player p) {
+        java.util.List<org.bukkit.inventory.ItemStack> list = new java.util.ArrayList<>();
+        list.add(p.getInventory().getItemInMainHand());
+        // 副手也要纳入（盾牌通常放在副手，「堡垒」等 Power 依赖手持判定）
+        list.add(p.getInventory().getItemInOffHand());
+        for (org.bukkit.inventory.ItemStack a : p.getInventory().getArmorContents()) {
+            if (a != null && !a.getType().isAir()) list.add(a);
+        }
+        return list;
+    }
+
+    // ===== 方块破坏（连锁采集：连锁挖矿 / 连锁砍伐） =====
+    @EventHandler
+    public void onBlockBreak(org.bukkit.event.block.BlockBreakEvent event) {
+        Player player = event.getPlayer();
+        org.bukkit.inventory.ItemStack item = player.getInventory().getItemInMainHand();
+        String itemId = RPGItem.readItemId(item);
+        if (itemId == null) return;
+        RPGItem rpgItem = plugin.registry().get(itemId);
+        if (rpgItem == null) return;
+
+        for (RPGPower power : rpgItem.effectivePowers()) {
+            if (power.type() != PowerType.CHAIN_BREAK) continue;
+            if (!power.triggers().contains(TriggerType.BREAK_BLOCK)) continue;
+            if (!checkAndApplyCooldown(player, rpgItem.id(), power)) continue;
+            if (!checkEnchantGate(player, rpgItem, item, power)) continue;
+            PowerExecutor.chainBreak(player, event.getBlock(), power.params());
+            break;
+        }
     }
 
     // ===== 右键 / 左键 =====
@@ -76,12 +134,28 @@ public class PowerTriggerListener implements Listener {
 
         // 只有物品上确实有该 trigger 的 Power 时才取消事件
         // 否则保留默认交互（放置方块、开门等）
-        boolean hasPowers = rpgItem.powers().stream()
+        boolean hasPowers = rpgItem.effectivePowers().stream()
                 .anyMatch(p -> p.triggers().contains(trigger));
         if (!hasPowers) return;
 
         if (trigger == TriggerType.RIGHT_CLICK) {
             event.setCancelled(true);
+        }
+
+        // 连锁耕地 / 连锁收获：需要对方块操作
+        if (event.getAction() == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK
+                && event.getClickedBlock() != null) {
+            for (RPGPower power : rpgItem.effectivePowers()) {
+                if (!power.triggers().contains(TriggerType.RIGHT_CLICK)) continue;
+                if (power.type() != PowerType.CHAIN_TILL && power.type() != PowerType.CHAIN_HARVEST) continue;
+                if (!checkAndApplyCooldown(player, rpgItem.id(), power)) continue;
+                if (!checkEnchantGate(player, rpgItem, item, power)) continue;
+                if (power.type() == PowerType.CHAIN_TILL) {
+                    PowerExecutor.chainTill(player, event.getClickedBlock(), power.params());
+                } else {
+                    PowerExecutor.chainHarvest(player, event.getClickedBlock(), power.params());
+                }
+            }
         }
 
         executePowers(player, null, null, rpgItem, trigger, item);
@@ -100,17 +174,18 @@ public class PowerTriggerListener implements Listener {
         RPGItem rpgItem = plugin.registry().get(itemId);
         if (rpgItem == null) return;
 
-        // 伤害加成、暴击、吸血 Power（需要在事件中直接修改伤害，不走 executePowers）
+        // 伤害加成、暴击、看破、吸血 Power（需要在事件中直接修改伤害，不走 executePowers）
         // 但仍然走冷却检查
         double totalDamage = event.getDamage();
         boolean isCrit = false;
 
-        for (RPGPower power : rpgItem.powers()) {
+        for (RPGPower power : rpgItem.effectivePowers()) {
             if (!power.triggers().contains(TriggerType.HIT)) continue;
 
             if (power.type() == PowerType.DAMAGE_BOOST) {
                 // 冷却检查
                 if (!checkAndApplyCooldown(player, rpgItem.id(), power)) continue;
+                if (!checkEnchantGate(player, rpgItem, item, power)) continue;
 
                 double bonus = power.paramDouble("bonus", 0);
                 String mode = power.paramString("mode", "add");
@@ -124,12 +199,30 @@ public class PowerTriggerListener implements Listener {
             if (power.type() == PowerType.CRITICAL_HIT) {
                 // 冷却检查
                 if (!checkAndApplyCooldown(player, rpgItem.id(), power)) continue;
+                if (!checkEnchantGate(player, rpgItem, item, power)) continue;
 
                 double chance = power.paramDouble("chance", 20.0);
                 double multiplier = power.paramDouble("multiplier", 2.0);
                 if (Math.random() * 100 < chance) {
                     totalDamage = totalDamage * multiplier;
                     isCrit = true;
+                }
+            }
+
+            // 看破：目标带 debuff 时概率造成倍率伤害，debuff 越多倍率越高
+            if (power.type() == PowerType.INSIGHT) {
+                if (!checkAndApplyCooldown(player, rpgItem.id(), power)) continue;
+                if (!checkEnchantGate(player, rpgItem, item, power)) continue;
+
+                int debuffs = countDebuffs(target);
+                if (debuffs > 0 && Math.random() * 100 < power.paramDouble("chance", 50.0)) {
+                    double mult = power.paramDouble("base", 1.5)
+                            + power.paramDouble("per-debuff", 0.25) * (debuffs - 1);
+                    totalDamage = totalDamage * mult;
+                    isCrit = true;
+                    player.sendActionBar(net.kyori.adventure.text.Component
+                            .text("看破 ×" + String.format("%.2f", mult) + "（" + debuffs + " 个负面状态）")
+                            .color(net.kyori.adventure.text.format.NamedTextColor.LIGHT_PURPLE));
                 }
             }
         }
@@ -143,14 +236,15 @@ public class PowerTriggerListener implements Listener {
                     15, 0.5, 0.5, 0.5, 0.2);
         }
 
-        // 吸血 Power（在伤害确定后计算回血）
+        // 吸血 / 饮血 Power（在伤害确定后计算回血）
         final double finalDamage = totalDamage;
-        for (RPGPower power : rpgItem.powers()) {
+        for (RPGPower power : rpgItem.effectivePowers()) {
             if (!power.triggers().contains(TriggerType.HIT)) continue;
-            if (power.type() != PowerType.VAMPIRIC) continue;
+            if (power.type() != PowerType.VAMPIRIC && power.type() != PowerType.BLOOD_FEAST) continue;
 
             // 冷却检查
             if (!checkAndApplyCooldown(player, rpgItem.id(), power)) continue;
+            if (!checkEnchantGate(player, rpgItem, item, power)) continue;
 
             double percent = power.paramDouble("percent", 30.0);
             double healAmount = finalDamage * percent / 100.0;
@@ -160,6 +254,17 @@ public class PowerTriggerListener implements Listener {
             // 吸血粒子
             player.getWorld().spawnParticle(org.bukkit.Particle.HEART,
                     player.getLocation().add(0, 1, 0), 5, 0.3, 0.3, 0.3, 0.1);
+
+            // 饮血：额外补充饥饿 + 红尘粒子
+            if (power.type() == PowerType.BLOOD_FEAST) {
+                int hunger = (int) Math.round(power.paramDouble("hunger", 1.0));
+                if (hunger > 0 && player.getGameMode() != org.bukkit.GameMode.SPECTATOR) {
+                    player.setFoodLevel((int) Math.min(20, player.getFoodLevel() + hunger));
+                    player.getWorld().spawnParticle(org.bukkit.Particle.DUST,
+                            player.getLocation().add(0, 0.8, 0), 8, 0.3, 0.3, 0.3, 0,
+                            new org.bukkit.Particle.DustOptions(org.bukkit.Color.RED, 1.0f));
+                }
+            }
         }
 
         // 执行 HIT trigger 的其他 Power
@@ -306,7 +411,7 @@ public class PowerTriggerListener implements Listener {
             if (itemId == null) continue;
             RPGItem rpgItem = plugin.registry().get(itemId);
             if (rpgItem == null) continue;
-            boolean hasProjPower = rpgItem.powers().stream()
+            boolean hasProjPower = rpgItem.effectivePowers().stream()
                     .anyMatch(p -> p.triggers().contains(TriggerType.PROJECTILE_LAUNCH)
                                 || p.triggers().contains(TriggerType.PROJECTILE_HIT));
             if (hasProjPower) return item;
@@ -381,12 +486,17 @@ public class PowerTriggerListener implements Listener {
         // 计算物品当前耐久（用于耐久条件检查）
         int currentDurability = getItemDurability(itemStack);
 
-        for (RPGPower power : rpgItem.powers()) {
+        for (RPGPower power : rpgItem.effectivePowers()) {
             if (!power.triggers().contains(trigger)) continue;
 
             // 冷却检查
             if (!checkAndApplyCooldown(player, rpgItem.id(), power)) {
                 sendFailMessage(player, power.failMessage(), "冷却中");
+                continue;
+            }
+
+            // 能力型附魔发动检查（物品级冷却 + 饥饿消耗，冷却中静默跳过、以物品栏冷却条体现）
+            if (!checkEnchantGate(player, rpgItem, itemStack, power)) {
                 continue;
             }
 
@@ -408,7 +518,8 @@ public class PowerTriggerListener implements Listener {
             boolean success = power.type().execute(player, target, hitLocation, power.params(), rpgItem);
 
             // 消耗物品 Power（独立处理）
-            if (power.type() == PowerType.CONSUME) {
+            // 经 CONSUME 触发（吃/喝完）时，原版进食已消耗物品，跳过重复扣减
+            if (power.type() == PowerType.CONSUME && trigger != TriggerType.CONSUME) {
                 int amount = power.paramInt("amount", 1);
                 // 只在 itemStack 是 RPG 物品时消耗
                 if (itemIdMatches(itemStack, rpgItem.id())) {
@@ -604,6 +715,22 @@ public class PowerTriggerListener implements Listener {
     }
 
     /**
+     * 统计目标身上的负面状态数量：HARMFUL 类药水效果各 1 个 + 着火 1 个 + 冰冻 1 个。
+     */
+    private int countDebuffs(LivingEntity target) {
+        int count = 0;
+        for (org.bukkit.potion.PotionEffect effect : target.getActivePotionEffects()) {
+            if (effect.getType().getEffectCategory()
+                    == org.bukkit.potion.PotionEffectType.Category.HARMFUL) {
+                count++;
+            }
+        }
+        if (target.getFireTicks() > 0) count++;
+        if (target.getFreezeTicks() > 0) count++;
+        return count;
+    }
+
+    /**
      * 检查并应用冷却。true = 可以执行（已写入新冷却），false = 冷却中。
      */
     private boolean checkAndApplyCooldown(Player player, String itemId, RPGPower power) {
@@ -633,5 +760,65 @@ public class PowerTriggerListener implements Listener {
         long remaining = end - now;
         if (remaining <= 0) return 0;
         return (int) Math.ceil(remaining / 1000.0);
+    }
+
+    // ============================================================
+    //  能力型附魔发动（默认 1s 冷却 + 2 饥饿消耗，冷却条代替提示语）
+    // ============================================================
+
+    /** 附魔发动的冷却间隔（秒），config: enchant-activation.cooldown-seconds */
+    private int enchantLockSeconds() {
+        return Math.max(0, plugin.getConfig().getInt("enchant-activation.cooldown-seconds", 1));
+    }
+
+    /** 附魔发动的饥饿消耗（点），config: enchant-activation.hunger-cost */
+    private int enchantHungerCost() {
+        return Math.max(0, plugin.getConfig().getInt("enchant-activation.hunger-cost", 2));
+    }
+
+    /**
+     * 能力型附魔发动检查（非 TICK 周期型）：
+     * 每个物品冷却 cooldown-seconds 秒（config: enchant-activation），冷却中静默跳过（无提示语），
+     * 以物品栏冷却条体现；发动一次消耗 hunger-cost 点饥饿度。
+     * 同一事件（同一游戏刻）内的多个附魔共享同一次发动。
+     * 连锁系列（连环/连锁耕地/连锁收获）固定豁免：无冷却、不耗饥饿。
+     */
+    private boolean checkEnchantGate(Player player, RPGItem rpgItem, ItemStack itemStack, RPGPower power) {
+        if (power.index() < EnchantRegistry.ENCHANT_INDEX_BASE) return true; // 物品本体 Power 不受限
+        if (power.triggers().contains(TriggerType.TICK)) return true;        // 周期型走自己的周期
+        // 连锁系列是连续作业型：1 秒发动锁会打断连续挖矿/耕地/收获的手感，故完全豁免
+        if (power.type() == PowerType.CHAIN_BREAK
+                || power.type() == PowerType.CHAIN_TILL
+                || power.type() == PowerType.CHAIN_HARVEST) return true;
+
+        String key = player.getUniqueId() + ":" + rpgItem.id();
+        long now = System.currentTimeMillis();
+        Long end = enchantLocks.get(key);
+
+        if (end == null || end <= now) {
+            // 新的一次发动：扣饥饿 + 上锁 + 物品栏冷却条
+            int seconds = enchantLockSeconds();
+            enchantLocks.put(key, now + seconds * 1000L);
+            enchantLockTick.put(key, org.bukkit.Bukkit.getCurrentTick());
+            consumeEnchantHunger(player);
+            if (itemStack != null && !itemStack.getType().isAir()) {
+                player.setCooldown(itemStack, seconds * 20);
+            }
+            return true;
+        }
+
+        // 已锁定：同一事件内首个附魔已发动，其余附魔共享本次发动；否则静默跳过
+        int currentTick = org.bukkit.Bukkit.getCurrentTick();
+        Integer acquiredTick = enchantLockTick.get(key);
+        return acquiredTick != null && acquiredTick == currentTick;
+    }
+
+    /** 附魔发动消耗饥饿：创造/旁观不消耗；饥饿不足扣到 0，发动不中断 */
+    private void consumeEnchantHunger(Player player) {
+        int cost = enchantHungerCost();
+        if (cost <= 0) return;
+        if (player.getGameMode() == org.bukkit.GameMode.CREATIVE
+                || player.getGameMode() == org.bukkit.GameMode.SPECTATOR) return;
+        player.setFoodLevel(Math.max(0, player.getFoodLevel() - cost));
     }
 }

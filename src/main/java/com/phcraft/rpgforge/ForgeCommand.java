@@ -107,10 +107,13 @@ public class ForgeCommand {
                 .then(Commands.literal("reload")
                         .executes(ctx -> {
                             CommandSender sender = ctx.getSource().getSender();
+                            plugin.reloadConfig();
+                            plugin.enchantRegistry().loadAll();
                             plugin.registry().loadAll();
                             plugin.registry().reloadRecipes();
-                            sender.sendMessage("§a[RPGForge] 重载完成，共 "
+                            sender.sendMessage("§a[RPGForge] 重载完成（含 config.yml，附魔发动冷却/饥饿消耗设置即时生效），共 "
                                     + plugin.registry().all().size() + " 个物品，"
+                                    + plugin.enchantRegistry().all().size() + " 个附魔预设，"
                                     + plugin.registry().allRecipes().size() + " 个配方。");
                             return Command.SINGLE_SUCCESS;
                         }))
@@ -120,7 +123,7 @@ public class ForgeCommand {
                                     CommandSender sender = ctx.getSource().getSender();
                                     String id = StringArgumentType.getString(ctx, "id").toLowerCase();
                                     if (!ItemRegistry.isValidId(id)) {
-                                        sender.sendMessage(RPGForgePlugin.cc("&c物品 ID 只能包含字母、数字、下划线和连字符。"));
+                                        sender.sendMessage("§c无效的物品 ID：仅允许小写字母、数字和下划线。");
                                         return 0;
                                     }
                                     if (plugin.registry().exists(id)) {
@@ -186,6 +189,10 @@ public class ForgeCommand {
                                                             String rpgItemId = StringArgumentType.getString(ctx, "rpgitem-id").toLowerCase();
                                                             String typeName = StringArgumentType.getString(ctx, "type").toLowerCase();
 
+                                                            if (!ItemRegistry.isValidId(id)) {
+                                                                sender.sendMessage("§c无效的配方 ID：仅允许小写字母、数字和下划线。");
+                                                                return 0;
+                                                            }
                                                             if (plugin.registry().recipeExists(id)) {
                                                                 sender.sendMessage("§c配方 " + id + " 已存在。");
                                                                 return 0;
@@ -301,7 +308,9 @@ public class ForgeCommand {
         for (RPGItem item : plugin.registry().all()) {
             sender.sendMessage(" §7▪ §f" + item.id()
                     + " §8- " + RPGForgePlugin.cc(item.displayName())
-                    + " §7(" + item.powers().size() + " 个能力)");
+                    + " §7(" + item.powers().size() + " 个能力"
+                    + (item.enchantments().isEmpty() ? "" : "，" + item.enchantments().size() + " 个附魔")
+                    + "§7)");
         }
     }
 

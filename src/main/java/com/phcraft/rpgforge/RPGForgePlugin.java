@@ -26,6 +26,7 @@ public final class RPGForgePlugin extends JavaPlugin {
     private static RPGForgePlugin instance;
 
     private ItemRegistry registry;
+    private EnchantRegistry enchantRegistry;
     private ForgeGui gui;
     private PowerTriggerListener triggerListener;
 
@@ -38,6 +39,10 @@ public final class RPGForgePlugin extends JavaPlugin {
         saveDefaultConfig();
 
         itemIdKey = new NamespacedKey(this, "item-id");
+
+        // 附魔预设必须先于物品加载（物品加载时需要重建附魔 Power 缓存）
+        enchantRegistry = new EnchantRegistry(this);
+        enchantRegistry.loadAll();
 
         registry = new ItemRegistry(this);
         registry.loadAll();
@@ -63,6 +68,7 @@ public final class RPGForgePlugin extends JavaPlugin {
         getLogger().info("RPGForge v" + getDescription().getVersion() + " 已启用。"
                 + " 共 " + registry.all().size() + " 个 RPG 物品，"
                 + registry.allRecipes().size() + " 个配方，"
+                + enchantRegistry.all().size() + " 个附魔预设，"
                 + PowerType.values().length + " 种 Power。");
     }
 
@@ -82,6 +88,10 @@ public final class RPGForgePlugin extends JavaPlugin {
 
     public ItemRegistry registry() {
         return registry;
+    }
+
+    public EnchantRegistry enchantRegistry() {
+        return enchantRegistry;
     }
 
     public ForgeGui gui() {

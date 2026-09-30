@@ -1,5 +1,6 @@
 package com.phcraft.rpgforge;
 
+import io.papermc.paper.datacomponent.DataComponentTypes;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.Sound;
@@ -8,6 +9,8 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemFlag;
@@ -18,6 +21,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * RPGForge 主 GUI 系统。
@@ -39,7 +47,7 @@ public final class ForgeGui implements Listener {
     private final Map<Inventory, EditContext> contexts = new HashMap<>();
 
     private record EditContext(String itemId, Integer powerIndex, PageType page, int pageNum) {
-        enum PageType { LIST, EDIT, POWER_EDIT, POWER_SELECT, TRIGGER_SELECT, PARAM_EDIT }
+        enum PageType { LIST, EDIT, POWER_EDIT, POWER_SELECT, TRIGGER_SELECT, PARAM_EDIT, ATTR_EDIT, ENCHANT_EDIT, FOOD_EDIT }
     }
 
     public ForgeGui(RPGForgePlugin plugin) {
@@ -55,7 +63,6 @@ public final class ForgeGui implements Listener {
     }
 
     private void openItemList(Player player, int page) {
-        if (!canEdit(player)) return;
         var holder = new ForgeHolder(ForgeHolder.Type.ITEM_LIST);
         Inventory inv = Bukkit.createInventory(holder, 54, RPGForgePlugin.cc("&b&l⚒ RPG 道具锻造台 ⚒"));
         holder.inventory = inv;
@@ -193,6 +200,46 @@ public final class ForgeGui implements Listener {
         inv.setItem(25, namedItem(Material.ANVIL, "&e最大耐久",
                 List.of("&7当前：&f" + item.maxDurability(),
                         "&e点击 &7修改最大耐久值（0=使用默认）")));
+
+        // 扩展编辑按钮（第 4 行）
+        String modelDisp = (item.itemModel() == null || item.itemModel().isBlank())
+                ? "&8未设置" : "&f" + item.itemModel();
+        inv.setItem(38, namedItem(Material.ITEM_FRAME, "&e物品模型 (item_model)",
+                List.of("&7当前：" + modelDisp,
+                        "&7格式：&f命名空间:路径 &7(可含 / 子目录)",
+                        "&7例：&fani:angel/angel_sword",
+                        "&7需资源包内有对应物品模型定义",
+                        "&e点击 &7在聊天栏输入（输入 none 清除）")));
+        String eqDisp = (item.equipmentAsset() == null || item.equipmentAsset().isBlank())
+                ? "&8未设置" : "&f" + item.equipmentAsset();
+        org.bukkit.inventory.EquipmentSlot resolvedSlot = item.resolveEquipmentSlot();
+        String slotDisp = item.equipmentSlot() != null ? item.equipmentSlot()
+                : (resolvedSlot != null ? "自动 (" + resolvedSlot.name() + ")" : "自动 (无对应槽)");
+        inv.setItem(39, namedItem(Material.ARMOR_STAND, "&e穿戴模型 (equippable)",
+                List.of("&7当前：" + eqDisp,
+                        "&7格式：&f命名空间:资产名 &7(如 &fani:angel&7)",
+                        "&7穿上身后按资源包装备资产渲染 3D 外观",
+                        "&7槽位：" + slotDisp,
+                        "&e点击 &7在聊天栏输入（输入 none 清除）")));
+        inv.setItem(41, namedItem(Material.LEATHER_CHESTPLATE, "&e穿戴槽位",
+                List.of("&7当前：&f" + slotDisp,
+                        "&7循环顺序：&fHEAD→CHEST→LEGS→FEET→自动",
+                        "&7自动 = 按材质名推断（_HELMET→头 等）",
+                        "&e点击 &7切换槽位")));
+        inv.setItem(40, namedItem(Material.DIAMOND_SWORD, "&e属性编辑",
+                List.of("&7配置攻击伤害/护甲/生命等属性修饰符",
+                        "&7当前已配置：&f" + item.attributes().size() + " 项")));
+        inv.setItem(42, namedItem(Material.ENCHANTED_BOOK, "&e附魔管理",
+                List.of("&7升级/降级/移除物品上的自定义附魔",
+                        "&7当前附魔：&f" + item.enchantments().size() + " 个")));
+        String foodDisp = item.isFood()
+                ? "&a已启用 &7（营养 &f" + item.foodNutrition() + "&7 / 饱和 &f" + item.foodSaturation() + "&7）"
+                : "&8未启用（不可食用）";
+        inv.setItem(43, namedItem(item.isFood() ? Material.COOKED_BEEF : Material.BREAD, "&e食物属性",
+                List.of("&7当前：" + foodDisp,
+                        "&7让物品像原版食物一样食用",
+                        "&7自动附带原版进食动画/音效/粒子（1.6秒）",
+                        "&e点击 &7打开食物编辑面板")));
 
         // Power 列表区（第 4 行，中间 7 格，支持翻页）
         // 标题
@@ -537,7 +584,15 @@ public final class ForgeGui implements Listener {
 
         event.setCancelled(true);
         Player player = (Player) event.getWhoClicked();
-        if (!canEdit(player)) return;
+
+        // 权限检查：撤销权限后拦截所有编辑操作
+        if (!player.hasPermission(RPGForgePlugin.PERM_USE)) {
+            player.sendMessage(RPGForgePlugin.cc("&c你没有权限使用 RPGForge 编辑器。"));
+            player.closeInventory();
+            cleanupChat(player);
+            return;
+        }
+
         int raw = event.getRawSlot();
         if (raw < 0 || raw >= top.getSize()) return;
 
@@ -553,6 +608,9 @@ public final class ForgeGui implements Listener {
             case POWER_SELECT -> handlePowerSelectClick(player, top, raw, ctx);
             case POWER_EDIT -> handlePowerEditClick(player, top, raw, ctx, event);
             case TRIGGER_SELECT -> handleTriggerSelectClick(player, top, raw, ctx);
+            case ATTR_EDIT -> handleAttrEditClick(player, top, raw, ctx, event);
+            case ENCHANT_EDIT -> handleEnchantEditClick(player, top, raw, ctx, event);
+            case FOOD_EDIT -> handleFoodEditClick(player, top, raw, ctx, event);
             default -> {}
         }
     }
@@ -564,28 +622,13 @@ public final class ForgeGui implements Listener {
         contexts.remove(top);
     }
 
+    /** 禁止拖拽真实物品进编辑菜单，避免关掉菜单后丢失 */
     @EventHandler
-    public void onDrag(org.bukkit.event.inventory.InventoryDragEvent event) {
+    public void onDrag(InventoryDragEvent event) {
         Inventory top = event.getView().getTopInventory();
-        if (top.getHolder() instanceof ForgeHolder
-                && event.getRawSlots().stream().anyMatch(slot -> slot < top.getSize())) {
+        if (top.getHolder() instanceof ForgeHolder) {
             event.setCancelled(true);
         }
-    }
-
-    @EventHandler
-    public void onQuit(org.bukkit.event.player.PlayerQuitEvent event) {
-        synchronized (chatWaiters) {
-            chatWaiters.remove(event.getPlayer().getUniqueId());
-            chatContexts.remove(event.getPlayer().getUniqueId());
-            queuedChat.remove(event.getPlayer().getUniqueId());
-        }
-    }
-
-    private boolean canEdit(Player player) {
-        if (player.hasPermission(RPGForgePlugin.PERM_USE)) return true;
-        player.sendMessage(RPGForgePlugin.cc("&c你没有使用 RPG 编辑器的权限。"));
-        return false;
     }
 
     // ----- 列表界面点击 -----
@@ -608,8 +651,8 @@ public final class ForgeGui implements Listener {
                     "&e请在聊天栏输入新物品的 ID（小写字母+下划线）："));
             // 注册一次性聊天监听
             awaitChatInput(player, "create-item", input -> {
-                String id = input.trim().toLowerCase().replaceAll("[^a-z0-9_]", "_");
-                if (id.isEmpty()) {
+                String id = input.trim().toLowerCase();
+                if (!ItemRegistry.isValidId(id)) {
                     player.sendMessage(RPGForgePlugin.cc("&c无效的物品 ID。"));
                     return;
                 }
@@ -763,6 +806,84 @@ public final class ForgeGui implements Listener {
             return;
         }
 
+        // 物品模型
+        if (raw == 38) {
+            promptChatInput(player, "输入 item_model（格式 命名空间:路径，如 ani:angel/angel_sword 或 rpgforge:bloodedge，输入 none 清除）：", input -> {
+                String val = input.trim().toLowerCase();
+                if ("none".equals(val) || "clear".equals(val)) {
+                    item.setItemModel(null);
+                } else {
+                    org.bukkit.NamespacedKey key = org.bukkit.NamespacedKey.fromString(val);
+                    if (key == null || !val.contains(":") || !key.getNamespace().equals(
+                            val.substring(0, val.indexOf(':')))) {
+                        player.sendMessage(RPGForgePlugin.cc(
+                                "&c无效的模型 ID（格式：命名空间:模型名，仅小写字母数字_-）："));
+                        openItemEdit(player, item.id(), 0);
+                        return;
+                    }
+                    item.setItemModel(val);
+                }
+                plugin.registry().saveItem(item);
+                openItemEdit(player, item.id(), 0);
+            });
+            return;
+        }
+        // 穿戴模型资产
+        if (raw == 39) {
+            promptChatInput(player, "输入穿戴模型资产（格式 命名空间:资产名，如 ani:angel，输入 none 清除）：", input -> {
+                String val = input.trim().toLowerCase();
+                if ("none".equals(val) || "clear".equals(val)) {
+                    item.setEquipmentAsset(null);
+                } else {
+                    org.bukkit.NamespacedKey key = org.bukkit.NamespacedKey.fromString(val);
+                    if (key == null || !val.contains(":") || !key.getNamespace().equals(
+                            val.substring(0, val.indexOf(':')))) {
+                        player.sendMessage(RPGForgePlugin.cc(
+                                "&c无效的资产 ID（格式：命名空间:资产名，仅小写字母数字_-）："));
+                        openItemEdit(player, item.id(), 0);
+                        return;
+                    }
+                    item.setEquipmentAsset(val);
+                }
+                plugin.registry().saveItem(item);
+                openItemEdit(player, item.id(), 0);
+            });
+            return;
+        }
+        // 穿戴槽位循环切换
+        if (raw == 41) {
+            String next;
+            if (item.equipmentSlot() == null) {
+                next = "HEAD";
+            } else {
+                next = switch (item.equipmentSlot()) {
+                    case "HEAD" -> "CHEST";
+                    case "CHEST" -> "LEGS";
+                    case "LEGS" -> "FEET";
+                    default -> null;
+                };
+            }
+            item.setEquipmentSlot(next);
+            plugin.registry().saveItem(item);
+            openItemEdit(player, item.id(), 0);
+            return;
+        }
+        // 属性编辑
+        if (raw == 40) {
+            openAttrEdit(player, item.id());
+            return;
+        }
+        // 附魔管理
+        if (raw == 42) {
+            openEnchantEdit(player, item.id(), 0);
+            return;
+        }
+        // 食物属性
+        if (raw == 43) {
+            openFoodEdit(player, item.id());
+            return;
+        }
+
         // 添加 Power
         if (raw == 37) {
             openPowerSelect(player, item.id(), 0);
@@ -836,6 +957,11 @@ public final class ForgeGui implements Listener {
         if (item == null) return;
 
         RPGPower power = new RPGPower(type);
+        // 返还容器 Power 在吃完时触发，默认绑定 CONSUME（避免用户忘记切换导致不生效）
+        if (type == PowerType.RETURN_CONTAINER) {
+            power.triggers().clear();
+            power.triggers().add(TriggerType.CONSUME);
+        }
         item.addPower(power);
         plugin.registry().saveItem(item);
 
@@ -999,85 +1125,516 @@ public final class ForgeGui implements Listener {
     }
 
     // ============================================================
-    //  聊天输入回调系统
+    //  属性编辑界面
     // ============================================================
 
-    private final Map<java.util.UUID, java.util.function.Consumer<String>> chatWaiters = new java.util.concurrent.ConcurrentHashMap<>();
-    private final Map<java.util.UUID, String> chatContexts = new java.util.concurrent.ConcurrentHashMap<>();
+    private void openAttrEdit(Player player, String itemId) {
+        RPGItem item = plugin.registry().get(itemId);
+        if (item == null) return;
 
-    // 由 chatWaiters 锁保护；移交主线程期间也保留输入归属，避免编辑文本进入公共聊天。
-    private final Map<java.util.UUID, java.util.ArrayDeque<String>> queuedChat = new HashMap<>();
+        var holder = new ForgeHolder(ForgeHolder.Type.ATTR_EDIT);
+        Inventory inv = Bukkit.createInventory(holder, 54,
+                RPGForgePlugin.cc("&b编辑属性：&f" + item.displayName()));
+        holder.inventory = inv;
+        contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.ATTR_EDIT, 0));
 
-    /** 提示玩家在聊天栏输入内容，回调处理结果 */
-    private void promptChatInput(Player player, String prompt,
-                                 java.util.function.Consumer<String> callback) {
+        ItemStack border = namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null);
+        for (int i = 0; i < 54; i++) {
+            if (i < 9 || i >= 45 || i % 9 == 0 || i % 9 == 8) {
+                inv.setItem(i, border);
+            }
+        }
+
+        inv.setItem(4, namedItem(Material.DIAMOND_SWORD, "&e属性说明",
+                List.of("&7手动属性作为物品的属性修饰符生效",
+                        "&7最终数值 = 手动值 + 属性型附魔加成",
+                        "&7手动配置过的属性覆盖原版默认值",
+                        "&7未配置的属性保留原版默认（如剑的攻速）")));
+
+        // 7 个属性卡（第 2 行 slot 10-16）
+        RPGEnchant.AttributeDef[] defs = RPGEnchant.AttributeDef.values();
+        for (int i = 0; i < defs.length && i < 7; i++) {
+            inv.setItem(10 + i, attrCard(item, defs[i]));
+        }
+
+        // 当前生效总览（第 3 行）
+        Map<String, Double> total = item.effectiveAttributes();
+        List<String> totalLore = new ArrayList<>();
+        if (total.isEmpty()) {
+            totalLore.add("&7未配置任何属性");
+        } else {
+            for (var entry : total.entrySet()) {
+                totalLore.add("&8▪ &f" + RPGEnchant.AttributeDef.displayNameOf(entry.getKey())
+                        + " &8= &e" + fmtNum(entry.getValue()));
+            }
+        }
+        totalLore.add("");
+        totalLore.add("&7属性型附魔的加成已计入上方数值");
+        inv.setItem(29, namedItem(Material.BOOK, "&e当前生效属性", totalLore));
+
+        inv.setItem(49, namedItem(Material.ARROW, "&e返回物品编辑", null));
+
+        player.openInventory(inv);
+        player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.6f, 1.0f);
+    }
+
+    private ItemStack attrCard(RPGItem item, RPGEnchant.AttributeDef def) {
+        double manual = item.attributes().getOrDefault(def.key(), 0.0);
+        double total = item.effectiveAttributes().getOrDefault(def.key(), 0.0);
+        double enchantPart = total - manual;
+
+        List<String> lore = new ArrayList<>();
+        lore.add("&7槽位：&f" + slotGroupDisplay(def.slotGroup()));
+        lore.add("&7手动值：" + (manual == 0 ? "&8未设置" : "&e" + fmtNum(manual)));
+        lore.add("&7附魔加成：&d" + fmtNum(enchantPart));
+        lore.add("&7生效合计：&a" + fmtNum(total));
+        lore.add("");
+        lore.add("&e点击 &7在聊天栏输入手动值（输入 0 清除）");
+        return namedItem(iconOf(def), "&e" + def.displayName(), lore);
+    }
+
+    private static Material iconOf(RPGEnchant.AttributeDef def) {
+        return switch (def) {
+            case ATTACK_DAMAGE -> Material.IRON_SWORD;
+            case ATTACK_SPEED -> Material.SUGAR;
+            case ARMOR -> Material.IRON_CHESTPLATE;
+            case ARMOR_TOUGHNESS -> Material.DIAMOND_CHESTPLATE;
+            case KNOCKBACK_RESISTANCE -> Material.PISTON;
+            case MAX_HEALTH -> Material.GOLDEN_APPLE;
+            case MOVEMENT_SPEED -> Material.FEATHER;
+        };
+    }
+
+    private static String slotGroupDisplay(org.bukkit.inventory.EquipmentSlotGroup group) {
+        if (group == org.bukkit.inventory.EquipmentSlotGroup.MAINHAND) return "主手";
+        if (group == org.bukkit.inventory.EquipmentSlotGroup.ARMOR) return "盔甲槽位";
+        return "任意槽位";
+    }
+
+    private static String fmtNum(double v) {
+        return (v == Math.floor(v) && !Double.isInfinite(v))
+                ? String.valueOf((long) v) : String.valueOf(v);
+    }
+
+    // ----- 属性编辑界面点击 -----
+    private void handleAttrEditClick(Player player, Inventory top, int raw, EditContext ctx,
+                                     InventoryClickEvent event) {
+        if (raw == 49) {
+            openItemEdit(player, ctx.itemId(), 0);
+            return;
+        }
+
+        RPGItem item = plugin.registry().get(ctx.itemId());
+        if (item == null) return;
+
+        if (raw >= 10 && raw <= 16) {
+            int idx = raw - 10;
+            RPGEnchant.AttributeDef[] defs = RPGEnchant.AttributeDef.values();
+            if (idx >= defs.length) return;
+            RPGEnchant.AttributeDef def = defs[idx];
+
+            promptChatInput(player, "输入 " + def.displayName() + " 的手动值（支持小数，0=清除）：", input -> {
+                try {
+                    double val = Double.parseDouble(input.trim());
+                    if (val == 0) {
+                        item.attributes().remove(def.key());
+                        player.sendMessage(RPGForgePlugin.cc("&7已清除 " + def.displayName() + " 的手动属性。"));
+                    } else {
+                        item.attributes().put(def.key(), val);
+                        player.sendMessage(RPGForgePlugin.cc("&a" + def.displayName()
+                                + " 已设置为 " + fmtNum(val)));
+                    }
+                    plugin.registry().saveItem(item);
+                } catch (NumberFormatException e) {
+                    player.sendMessage(RPGForgePlugin.cc("&c无效的数字：" + input));
+                }
+                openAttrEdit(player, item.id());
+            });
+        }
+    }
+
+    // ============================================================
+    //  食物属性编辑界面
+    // ============================================================
+
+    private void openFoodEdit(Player player, String itemId) {
+        RPGItem item = plugin.registry().get(itemId);
+        if (item == null) return;
+
+        var holder = new ForgeHolder(ForgeHolder.Type.FOOD_EDIT);
+        Inventory inv = Bukkit.createInventory(holder, 54,
+                RPGForgePlugin.cc("&b食物属性：&f" + item.displayName()));
+        holder.inventory = inv;
+        contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.FOOD_EDIT, 0));
+
+        ItemStack border = namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null);
+        for (int i = 0; i < 54; i++) {
+            if (i < 9 || i >= 45 || i % 9 == 0 || i % 9 == 8) {
+                inv.setItem(i, border);
+            }
+        }
+
+        inv.setItem(4, namedItem(Material.BOOK, "&e食物说明",
+                List.of("&7设置营养值 > 0 后物品即可食用",
+                        "&7进食动画/音效/粒子/时长与原版一致（1.6秒）",
+                        "&7吃/喝完后会触发 CONSUME 类能力",
+                        "&7如需吃完返还容器：添加「吃完返还容器」能力")));
+
+        inv.setItem(19, namedItem(Material.COOKED_BEEF, "&e营养值（饥饿恢复）",
+                List.of("&7当前：" + (item.isFood() ? "&f" + item.foodNutrition() : "&8未设置"),
+                        "&7每点 = 鸡腿图标的半格（原版面包 = 5）",
+                        "&e点击 &7在聊天栏输入（0 = 关闭食物功能）")));
+        inv.setItem(20, namedItem(Material.GLOWSTONE_DUST, "&e饱和度",
+                List.of("&7当前：" + (item.foodSaturation() > 0 ? "&f" + item.foodSaturation() : "&8未设置"),
+                        "&7吃完后额外维持奔跑的隐性饱腹值（支持小数）",
+                        "&7原版参考：熟牛肉 0.8 / 金胡萝卜 1.2",
+                        "&e点击 &7在聊天栏输入")));
+        inv.setItem(21, namedItem(Material.GOLDEN_APPLE, "&e随时可吃："
+                        + (item.foodCanAlwaysEat() ? "&a开启" : "&c关闭"),
+                List.of("&7开启后即使饱食度满也能继续吃",
+                        "&7原版金苹果就是这种效果",
+                        "&e点击 &7切换")));
+
+        if (item.isFood()) {
+            inv.setItem(23, namedItem(Material.BARRIER, "&c关闭食物功能",
+                    List.of("&7点击后清除所有食物属性",
+                            "&7物品恢复为普通道具")));
+        } else {
+            inv.setItem(23, namedItem(Material.LIME_DYE, "&a启用食物功能",
+                    List.of("&7点击设置营养值 4 / 饱和度 0.6（原版熟牛排）",
+                            "&7之后可再单独微调")));
+        }
+
+        inv.setItem(49, namedItem(Material.ARROW, "&e返回物品编辑", null));
+
+        player.openInventory(inv);
+        player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.6f, 1.0f);
+    }
+
+    // ----- 食物编辑界面点击 -----
+    private void handleFoodEditClick(Player player, Inventory top, int raw, EditContext ctx,
+                                     InventoryClickEvent event) {
+        if (raw == 49) {
+            openItemEdit(player, ctx.itemId(), 0);
+            return;
+        }
+
+        RPGItem item = plugin.registry().get(ctx.itemId());
+        if (item == null) return;
+
+        // 营养值
+        if (raw == 19) {
+            promptChatInput(player, "输入营养值（整数，0=关闭食物功能）：", input -> {
+                try {
+                    int val = Integer.parseInt(input.trim());
+                    item.setFoodNutrition(val);
+                    plugin.registry().saveItem(item);
+                    player.sendMessage(RPGForgePlugin.cc(val > 0
+                            ? "&a营养值已设置为 " + val : "&7食物功能已关闭。"));
+                } catch (NumberFormatException e) {
+                    player.sendMessage(RPGForgePlugin.cc("&c无效的数字：" + input));
+                }
+                openFoodEdit(player, item.id());
+            });
+            return;
+        }
+        // 饱和度
+        if (raw == 20) {
+            promptChatInput(player, "输入饱和度（支持小数，如 0.6）：", input -> {
+                try {
+                    float val = Float.parseFloat(input.trim());
+                    item.setFoodSaturation(val);
+                    plugin.registry().saveItem(item);
+                    player.sendMessage(RPGForgePlugin.cc("&a饱和度已设置为 " + val));
+                } catch (NumberFormatException e) {
+                    player.sendMessage(RPGForgePlugin.cc("&c无效的数字：" + input));
+                }
+                openFoodEdit(player, item.id());
+            });
+            return;
+        }
+        // 随时可吃切换
+        if (raw == 21) {
+            item.setFoodCanAlwaysEat(!item.foodCanAlwaysEat());
+            plugin.registry().saveItem(item);
+            openFoodEdit(player, item.id());
+            return;
+        }
+        // 启用 / 关闭
+        if (raw == 23) {
+            if (item.isFood()) {
+                item.clearFood();
+                player.sendMessage(RPGForgePlugin.cc("&7食物功能已关闭。"));
+            } else {
+                item.setFoodNutrition(4);
+                item.setFoodSaturation(0.6f);
+                player.sendMessage(RPGForgePlugin.cc("&a食物功能已启用（营养 4 / 饱和 0.6）。"));
+            }
+            plugin.registry().saveItem(item);
+            openFoodEdit(player, item.id());
+        }
+    }
+
+    // ============================================================
+    //  附魔管理界面
+    // ============================================================
+
+    private void openEnchantEdit(Player player, String itemId, int page) {
+        RPGItem item = plugin.registry().get(itemId);
+        if (item == null) return;
+
+        var holder = new ForgeHolder(ForgeHolder.Type.ENCHANT_EDIT);
+        Inventory inv = Bukkit.createInventory(holder, 54,
+                RPGForgePlugin.cc("&b附魔管理：&f" + item.displayName()));
+        holder.inventory = inv;
+        contexts.put(inv, new EditContext(itemId, null, EditContext.PageType.ENCHANT_EDIT, page));
+
+        ItemStack border = namedItem(Material.GRAY_STAINED_GLASS_PANE, " ", null);
+        for (int i = 0; i < 54; i++) {
+            if (i < 9 || i >= 45 || i % 9 == 0 || i % 9 == 8) {
+                inv.setItem(i, border);
+            }
+        }
+
+        List<RPGEnchant> all = new ArrayList<>(plugin.enchantRegistry().all());
+        int perPage = 28;
+        int totalPages = Math.max(1, (int) Math.ceil((double) all.size() / perPage));
+        if (page < 0) page = 0;
+        if (page >= totalPages) page = totalPages - 1;
+
+        int start = page * perPage;
+        int slot = 10;
+        for (int i = 0; i < perPage; i++) {
+            int idx = start + i;
+            if (idx >= all.size()) break;
+            inv.setItem(slot, enchantCard(item, all.get(idx)));
+            slot++;
+            if ((slot + 1) % 9 == 0) slot += 2;
+        }
+
+        inv.setItem(4, namedItem(Material.ENCHANTED_BOOK, "&e附魔预设",
+                List.of("&7共 &f" + all.size() + " &7个预设",
+                        "&7第 &e" + (page + 1) + " &7/ &e" + totalPages + " &7页",
+                        "&7物品当前附魔：&f" + item.enchantments().size() + " 个")));
+        inv.setItem(49, namedItem(Material.ARROW, "&e返回物品编辑", null));
+        if (page > 0) {
+            inv.setItem(48, namedItem(Material.ARROW, "&a上一页",
+                    List.of("&7第 " + (page + 1) + " / " + totalPages + " 页")));
+        }
+        if (page < totalPages - 1) {
+            inv.setItem(50, namedItem(Material.ARROW, "&a下一页",
+                    List.of("&7第 " + (page + 1) + " / " + totalPages + " 页")));
+        }
+
+        player.openInventory(inv);
+        player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.6f, 1.0f);
+    }
+
+    private ItemStack enchantCard(RPGItem item, RPGEnchant enchant) {
+        int level = item.enchantments().getOrDefault(enchant.id(), 0);
+
+        List<String> lore = new ArrayList<>();
+        lore.add("&7类型：" + (enchant.isAttributeType() ? "&b属性型" : "&d能力型"));
+        for (String line : enchant.effectSummary()) {
+            lore.add(line);
+        }
+        lore.add("&7稀有度：" + enchant.rarity().color() + enchant.rarity().displayName());
+        lore.add("&7最大等级：&f" + RPGEnchant.roman(enchant.maxLevel()));
+        lore.add("");
+        lore.add("&7当前等级：" + (level <= 0 ? "&8无" : "&f" + RPGEnchant.roman(level)));
+        if (level > 0) {
+            lore.add(enchant.loreLine(level));
+        }
+        if (enchant.description() != null && !enchant.description().isEmpty()) {
+            lore.add("&8" + enchant.description());
+        }
+        lore.add("");
+        lore.add("&a左键 &7升级  |  &e右键 &7降级");
+        lore.add("&cShift+左键 &7移除");
+
+        // 用稀有度色作为标题色（剥掉预设名自带的行首颜色码）
+        String rawName = enchant.displayName().replaceFirst("^&[0-9a-fk-or]", "");
+        return namedItem(Material.ENCHANTED_BOOK,
+                enchant.rarity().color() + "&l" + rawName, lore);
+    }
+
+    // ----- 附魔管理界面点击 -----
+    private void handleEnchantEditClick(Player player, Inventory top, int raw, EditContext ctx,
+                                         InventoryClickEvent event) {
+        if (raw == 49) {
+            openItemEdit(player, ctx.itemId(), 0);
+            return;
+        }
+        if (raw == 48 && event.getCurrentItem().getType() == Material.ARROW) {
+            openEnchantEdit(player, ctx.itemId(), ctx.pageNum() - 1);
+            return;
+        }
+        if (raw == 50 && event.getCurrentItem().getType() == Material.ARROW) {
+            openEnchantEdit(player, ctx.itemId(), ctx.pageNum() + 1);
+            return;
+        }
+
+        RPGItem item = plugin.registry().get(ctx.itemId());
+        if (item == null) return;
+
+        List<RPGEnchant> all = new ArrayList<>(plugin.enchantRegistry().all());
+        int idx = enchantSlotToIndex(raw, ctx.pageNum());
+        if (idx < 0 || idx >= all.size()) return;
+        RPGEnchant enchant = all.get(idx);
+
+        if (event.isShiftClick() && event.isLeftClick()) {
+            if (plugin.enchantRegistry().removeFrom(item, enchant.id())) {
+                plugin.registry().saveItem(item);
+                player.sendMessage(RPGForgePlugin.cc("&c已移除附魔 " + enchant.displayName() + "&c。"));
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 0.6f, 1.0f);
+            }
+        } else if (event.isLeftClick()) {
+            if (plugin.enchantRegistry().applyTo(item, enchant.id())) {
+                int lvl = item.enchantments().get(enchant.id());
+                plugin.registry().saveItem(item);
+                player.sendMessage(RPGForgePlugin.cc("&a附魔 " + enchant.displayName()
+                        + " &a升到 " + RPGEnchant.roman(lvl) + " 级！"));
+                player.playSound(player.getLocation(), Sound.BLOCK_ENCHANTMENT_TABLE_USE, 0.8f, 1.2f);
+            } else {
+                player.sendMessage(RPGForgePlugin.cc("&e已达到最大等级。"));
+            }
+        } else if (event.isRightClick()) {
+            if (plugin.enchantRegistry().downgrade(item, enchant.id())) {
+                plugin.registry().saveItem(item);
+                player.sendMessage(RPGForgePlugin.cc("&e附魔 " + enchant.displayName() + " &e降了一级。"));
+                player.playSound(player.getLocation(), Sound.BLOCK_GRAVEL_BREAK, 0.6f, 0.8f);
+            } else {
+                player.sendMessage(RPGForgePlugin.cc("&7该物品没有这个附魔。"));
+            }
+        }
+        openEnchantEdit(player, item.id(), ctx.pageNum());
+    }
+
+    /** 附魔列表 slot 反查索引（与 openEnchantEdit 的填充规则保持一致） */
+    private static int enchantSlotToIndex(int slot, int page) {
+        int row = slot / 9;
+        int col = slot % 9;
+        if (row < 1 || row > 4 || col < 1 || col > 7) return -1;
+        return page * 28 + (row - 1) * 7 + (col - 1);
+    }
+
+    // ============================================================
+    //  聊天输入回调系统（队列 + 主线程执行）
+    // ============================================================
+
+    /**
+     * The async listener only touches this concurrent map and each state's queue.
+     * The callback and all Bukkit access are confined to the primary thread.
+     */
+    private final Map<UUID, ChatInputState> chatInputs = new ConcurrentHashMap<>();
+
+    private static final class ChatInputState {
+        private final ConcurrentLinkedQueue<String> messages = new ConcurrentLinkedQueue<>();
+        private final AtomicBoolean scheduled = new AtomicBoolean();
+        private volatile boolean active = true;
+        private Consumer<String> callback;
+    }
+
+    /** 提示玩家在聊天栏输入内容，回调在主线程执行 */
+    private void promptChatInput(Player player, String prompt, Consumer<String> callback) {
         player.closeInventory();
         player.sendMessage(RPGForgePlugin.cc("&e[RPGForge] " + prompt));
         player.sendMessage(RPGForgePlugin.cc("&7（输入 cancel 取消）"));
-        chatWaiters.put(player.getUniqueId(), callback);
+        cleanupChat(player);
+        awaitChatInput(player, "prompt", callback);
     }
 
-    private void awaitChatInput(Player player, String context,
-                                java.util.function.Consumer<String> callback) {
-        chatWaiters.put(player.getUniqueId(), callback);
-        chatContexts.put(player.getUniqueId(), context);
+    private void awaitChatInput(Player player, String context, Consumer<String> callback) {
+        UUID id = player.getUniqueId();
+        ChatInputState state = chatInputs.get(id);
+        if (state == null || !state.active) {
+            state = new ChatInputState();
+            chatInputs.put(id, state);
+        }
+        state.callback = callback;
     }
 
-    /** 从异步聊天事件路由输入（由主类的 ChatListener 调用） */
+    /** 异步线程安全：该玩家是否存在等待中的聊天输入（供事件监听器先行取消事件） */
+    public boolean hasPendingInput(Player player) {
+        ChatInputState state = chatInputs.get(player.getUniqueId());
+        return state != null && state.active;
+    }
+
+    /** AsyncPlayerChatEvent: cancel immediately, enqueue without accessing Bukkit state. */
     public boolean handleChatInput(Player player, String message) {
-        var id = player.getUniqueId();
-        synchronized (chatWaiters) {
-            if (!chatWaiters.containsKey(id) && !queuedChat.containsKey(id)) return false;
-            var queue = queuedChat.get(id);
-            if (queue == null) {
-                queue = new java.util.ArrayDeque<>();
-                queuedChat.put(id, queue);
-                var pending = queue;
-                Bukkit.getScheduler().runTask(plugin, () -> drainChatInput(player, pending));
-            }
-            queue.addLast(message);
+        ChatInputState state = chatInputs.get(player.getUniqueId());
+        if (state == null || !state.active) return false;
+
+        state.messages.add(message);
+        if (state.scheduled.compareAndSet(false, true)) {
+            plugin.getServer().getScheduler().runTask(plugin, () -> processChatQueue(player, state));
         }
         return true;
     }
 
-    private void drainChatInput(Player player, java.util.ArrayDeque<String> pending) {
-        var id = player.getUniqueId();
+    /** Main thread only. A completed input discards messages queued for that input. */
+    private void processChatQueue(Player player, ChatInputState state) {
+        UUID id = player.getUniqueId();
         try {
-            while (true) {
-                String message;
-                java.util.function.Consumer<String> callback;
-                synchronized (chatWaiters) {
-                    var queue = queuedChat.get(id);
-                    if (queue != pending) return; // 退出或重新登录后的会话不由旧任务处理
-                    message = queue.pollFirst();
-                    if (message == null) {
-                        queuedChat.remove(id);
-                        return;
-                    }
-                    callback = chatWaiters.remove(id);
+            String message;
+            while (state.active && chatInputs.get(id) == state
+                    && (message = state.messages.poll()) != null) {
+                if (!player.isOnline()) {
+                    cleanupChat(player);
+                    break;
                 }
-                chatContexts.remove(id);
-                if (!player.isOnline() || !canEdit(player)) {
-                    synchronized (chatWaiters) {
-                        queuedChat.remove(id);
-                        chatWaiters.remove(id);
-                    }
-                    return;
+                if (!player.hasPermission(RPGForgePlugin.PERM_USE)) {
+                    cleanupChat(player);
+                    player.sendMessage(RPGForgePlugin.cc("&c你的 RPGForge 编辑权限已被撤销。"));
+                    break;
                 }
-                if (callback == null) continue; // 单次输入结束后，已接收的多余输入不再广播
+
+                Consumer<String> callback = state.callback;
+                if (callback == null) {
+                    discardChatInput(id, state);
+                    break;
+                }
+                state.callback = null;
                 if ("cancel".equalsIgnoreCase(message.trim())) {
+                    discardChatInput(id, state);
                     player.sendMessage(RPGForgePlugin.cc("&7已取消。"));
-                    continue;
+                    break;
                 }
-                callback.accept(message); // 多行编辑可在这里注册下一行的 waiter
+
+                callback.accept(message);
+                // A description editor may re-arm this same input for its next line.
+                // Other callbacks finish here; their queued messages must not leak.
+                if (state.callback == null) {
+                    discardChatInput(id, state);
+                    break;
+                }
             }
-        } catch (RuntimeException | Error ex) {
-            synchronized (chatWaiters) {
-                queuedChat.remove(id);
-                chatWaiters.remove(id);
+        } finally {
+            state.scheduled.set(false);
+            if (state.active && chatInputs.get(id) == state && !state.messages.isEmpty()
+                    && state.scheduled.compareAndSet(false, true)) {
+                plugin.getServer().getScheduler().runTask(plugin, () -> processChatQueue(player, state));
             }
-            throw ex;
         }
+    }
+
+    private void discardChatInput(UUID id, ChatInputState state) {
+        state.active = false;
+        chatInputs.remove(id, state);
+        state.messages.clear();
+    }
+
+    private void cleanupChat(Player player) {
+        ChatInputState state = chatInputs.remove(player.getUniqueId());
+        if (state != null) {
+            state.active = false;
+            state.messages.clear();
+        }
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        cleanupChat(event.getPlayer());
     }
 
     // ============================================================
@@ -1148,7 +1705,7 @@ public final class ForgeGui implements Listener {
                 player.sendMessage(RPGForgePlugin.cc(
                         "&7输入新内容，或输入 &edone &7完成"));
             }
-            gui.chatWaiters.put(player.getUniqueId(), this::handleLine);
+            gui.awaitChatInput(player, "description", this::handleLine);
         }
     }
 
@@ -1167,12 +1724,15 @@ public final class ForgeGui implements Listener {
             meta.addItemFlags(ItemFlag.values());
             item.setItemMeta(meta);
         }
+        // 功能图标：剥掉食物/可食用组件，避免 hover 显示原版饥饿度/药水效果误导
+        item.unsetData(DataComponentTypes.FOOD);
+        item.unsetData(DataComponentTypes.CONSUMABLE);
         return item;
     }
 
     /** GUI 归属标记 */
     public static final class ForgeHolder implements InventoryHolder {
-        enum Type { ITEM_LIST, ITEM_EDIT, POWER_EDIT, POWER_SELECT, TRIGGER_SELECT, PARAM_EDIT }
+        enum Type { ITEM_LIST, ITEM_EDIT, POWER_EDIT, POWER_SELECT, TRIGGER_SELECT, PARAM_EDIT, ATTR_EDIT, ENCHANT_EDIT, FOOD_EDIT }
 
         private final Type type;
         private Inventory inventory;

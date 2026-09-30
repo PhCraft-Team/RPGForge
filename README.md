@@ -1,11 +1,11 @@
 # RPGForge — 可视化 RPG 道具编辑器
 
-> Paper 26.3 预研分支：编译目标固定为 `26.3.build.19-alpha`，运行需 Java 25。产物仅供隔离测试，验证结果见 `PAPER_26_3.md`；暂不作为正式服升级依据。
+> Paper 26.3 预研分支：编译目标固定为 `26.3.build.19-alpha`，运行需 Java 25。构建产物仅供隔离测试，不作为正式服升级依据；验证边界见 `PAPER_26_3.md`。
 
 > 在游戏内用 GUI 轻松制作各种特效 RPG 道具，无需写一行配置。
 
 ![Java](https://img.shields.io/badge/Java-25-orange)
-![Paper](https://img.shields.io/badge/Paper-1.21+-green)
+![Paper](https://img.shields.io/badge/Paper-26.3--alpha-yellow)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## ✨ 特性
@@ -14,6 +14,7 @@
 - **25+ 种内置 Power**：命令、药水、闪电、爆炸、粒子、传送、体积变化、范围伤害、暴击、吸血、护盾…
 - **15+ 种触发方式**：右键、左键、攻击命中、被攻击、食用、持有刻、弹射物发射、弹射物命中、穿上盔甲…
 - **Condition 条件系统**：概率、血量、饱食度、等级、时间、天气、权限、计分板、目标类型…
+- **附魔框架**：Power 效果打包为分级/稀有度附魔，装备可叠加多种效果
 - **耐久显示多样化**：原版耐久条、进度条、数字、隐藏 四种模式可选
 - **维修系统**：命令维修 + 铁砧维修，兼容原版耐久机制
 - **配方系统**：支持有序/无序/熔炉三种配方，合成出 RPG 物品
@@ -23,12 +24,12 @@
 
 ## 📦 安装
 
-1. 下载最新版 `RPGForge-x.x.x.jar`
+1. 从 [Releases](../../releases) 下载最新版 `RPGForge-x.x.x.jar`
 2. 放入服务器 `plugins/` 目录
 3. 重启服务器
 4. （可选）安装 Vault 经济插件以启用金币消耗功能
 
-> 支持 Paper 1.21 及以上版本，需要 **Java 25** 运行环境。
+> 本预研分支以 Paper 26.3 Alpha API 构建，只能用于匹配测试服；不兼容 Paper 1.21.x 正式服。正式服请使用 Releases 中的正式版本。
 
 ## 🚀 快速开始
 
@@ -58,7 +59,9 @@
 
 ## 📚 完整文档
 
-详见 [GitHub Wiki](https://github.com/LHXPaul/RPGForge/wiki)
+详见仓库 [wiki/](wiki/Home.md) 目录：
+
+[快速开始](wiki/快速开始.md) · [Power 系统](wiki/Power-系统.md) · [Trigger 系统](wiki/Trigger-系统.md) · [Condition 系统](wiki/Condition-系统.md) · [配方系统](wiki/配方系统.md) · [耐久与维修](wiki/耐久与维修.md) · [物品数据格式](wiki/物品数据格式.md) · [命令与权限](wiki/命令与权限.md) · [常见问题](wiki/常见问题.md)
 
 ## 🧩 Power 列表
 
@@ -121,19 +124,16 @@
 | `JUMP` | 跳跃时 |
 | `BREAK_BLOCK` | 破坏方块时 |
 
+## 🔨 从源码构建
+
+安装 Java 25 与 Gradle 9.1.0 后执行：
+
+```bash
+gradle --no-daemon clean build
+```
+
+产物位于 `build/libs/`。贡献规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ## 📝 License
 
 MIT License
-
-## 构建和检查
-
-构建配置放在 `plugin.json`。提交 PR 后，GitHub Actions 会检查中文标题、运行构建和测试、核对 JAR 的名称与版本，并上传保留 7 天的构建包。
-
-本预研分支的 `releaseEnabled` 为 `false`，合并后也不会自动发布正式版。修改或升级依赖前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-本地检查：
-
-```bash
-python -X utf8 -m unittest discover -s .github/scripts -p 'test_*.py' -v
-gradle --no-daemon clean build
-```
