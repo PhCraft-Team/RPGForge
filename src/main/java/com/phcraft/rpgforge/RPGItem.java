@@ -471,6 +471,9 @@ public class RPGItem {
             }
             if (maxDurability > 0 && meta instanceof org.bukkit.inventory.meta.Damageable damageable) {
                 damageable.setMaxDamage(maxDurability);
+                // 26.2 校验：可损耗物品不可堆叠（max_stack_size 必须为 1），否则 ItemStack 构造失败，
+                // 表现为悬停显示"空气"、收纳袋处理崩溃、服务器刷 "Item cannot be both damageable and stackable"
+                meta.setMaxStackSize(1);
             }
 
             // 属性修饰符：手动属性 + 属性型附魔的合计值。
