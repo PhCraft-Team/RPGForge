@@ -1,9 +1,11 @@
 # RPGForge — 可视化 RPG 道具编辑器
 
+> Paper 26.3 预研分支：编译目标固定为 `26.3.build.19-alpha`，运行需 Java 25。构建产物仅供隔离测试，不作为正式服升级依据；验证边界见 `PAPER_26_3.md`。
+
 > 在游戏内用 GUI 轻松制作各种特效 RPG 道具，无需写一行配置。
 
 ![Java](https://img.shields.io/badge/Java-25-orange)
-![Paper](https://img.shields.io/badge/Paper-1.21+-green)
+![Paper](https://img.shields.io/badge/Paper-26.3--alpha-yellow)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## ✨ 特性
@@ -27,7 +29,7 @@
 3. 重启服务器
 4. （可选）安装 Vault 经济插件以启用金币消耗功能
 
-> 支持 Paper 1.21 及以上版本（已在 Paper 26.2 验证），需要 **Java 25** 运行环境。
+> 本预研分支以 Paper 26.3 Alpha API 构建，只能用于匹配测试服；不兼容 Paper 1.21.x 正式服。正式服请使用 Releases 中的正式版本。
 
 ## 🚀 快速开始
 
